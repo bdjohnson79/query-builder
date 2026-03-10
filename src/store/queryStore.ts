@@ -11,6 +11,7 @@ import {
   type OrderByItem,
   type ColumnRef,
   type FilterGroup,
+  type FilterRule,
   type WindowFunctionDef,
   type CTEDef,
 } from '@/types/query'
@@ -23,6 +24,7 @@ interface QueryStore {
   addTable: (table: TableInstance) => void
   removeTable: (instanceId: string) => void
   updateTablePosition: (instanceId: string, position: { x: number; y: number }) => void
+  updateTableAlias: (instanceId: string, newAlias: string) => void
 
   // Join actions
   addJoin: (join: JoinDef) => void
@@ -98,6 +100,55 @@ export const useQueryStore = create<QueryStore>()(
           ),
         }
         return { queryState: next }
+      }),
+
+    updateTableAlias: (instanceId, newAlias) =>
+      set((s) => {
+        const table = s.queryState.tables.find((t) => t.id === instanceId)
+        if (!table || table.alias === newAlias) return s
+        const old = table.alias
+        const renameFilter = (group: FilterGroup): FilterGroup => ({
+          ...group,
+          rules: group.rules.map((r) => {
+            if ('rules' in r) return renameFilter(r as FilterGroup)
+            const rule = r as FilterRule
+            return rule.field.startsWith(`${old}.`)
+              ? { ...rule, field: `${newAlias}.${rule.field.slice(old.length + 1)}` }
+              : rule
+          }),
+        })
+        const next: QueryState = {
+          ...s.queryState,
+          tables: s.queryState.tables.map((t) =>
+            t.id === instanceId ? { ...t, alias: newAlias } : t
+          ),
+          joins: s.queryState.joins.map((j) => ({
+            ...j,
+            leftTableAlias: j.leftTableAlias === old ? newAlias : j.leftTableAlias,
+            rightTableAlias: j.rightTableAlias === old ? newAlias : j.rightTableAlias,
+          })),
+          selectedColumns: s.queryState.selectedColumns.map((c) =>
+            c.tableAlias === old ? { ...c, tableAlias: newAlias } : c
+          ),
+          groupBy: s.queryState.groupBy.map((g) =>
+            g.tableAlias === old ? { ...g, tableAlias: newAlias } : g
+          ),
+          orderBy: s.queryState.orderBy.map((o) =>
+            o.tableAlias === old ? { ...o, tableAlias: newAlias } : o
+          ),
+          windowFunctions: s.queryState.windowFunctions.map((wf) => ({
+            ...wf,
+            partitionBy: wf.partitionBy.map((p) =>
+              p.tableAlias === old ? { ...p, tableAlias: newAlias } : p
+            ),
+            orderBy: wf.orderBy.map((o) =>
+              o.tableAlias === old ? { ...o, tableAlias: newAlias } : o
+            ),
+          })),
+          where: renameFilter(s.queryState.where),
+          having: renameFilter(s.queryState.having),
+        }
+        return { queryState: next, generatedSql: rebuildSql(next) }
       }),
 
     addJoin: (join) =>

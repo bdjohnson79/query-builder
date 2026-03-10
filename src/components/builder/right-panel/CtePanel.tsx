@@ -8,12 +8,10 @@ import { emptyQueryState } from '@/types/query'
 import type { CTEDef } from '@/types/query'
 
 export function CtePanel() {
-  const { ctes, addCte, updateCte, removeCte } = useQueryStore((s) => ({
-    ctes: s.queryState.ctes,
-    addCte: s.addCte,
-    updateCte: s.updateCte,
-    removeCte: s.removeCte,
-  }))
+  const ctes = useQueryStore((s) => s.queryState.ctes)
+  const addCte = useQueryStore((s) => s.addCte)
+  const updateCte = useQueryStore((s) => s.updateCte)
+  const removeCte = useQueryStore((s) => s.removeCte)
 
   const addNew = () => {
     const cte: CTEDef = {

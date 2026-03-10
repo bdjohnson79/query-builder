@@ -7,9 +7,10 @@ import { OrderByPanel } from './OrderByPanel'
 import { LimitOffsetPanel } from './LimitOffsetPanel'
 import { WindowFunctionPanel } from './WindowFunctionPanel'
 import { CtePanel } from './CtePanel'
+import { GrafanaPanel } from './GrafanaPanel'
 import { ScrollArea } from '@/components/ui/scroll-area'
 
-type Tab = 'sql' | 'where' | 'having' | 'groupby' | 'orderby' | 'limit' | 'windows' | 'ctes'
+type Tab = 'sql' | 'where' | 'having' | 'groupby' | 'orderby' | 'limit' | 'windows' | 'ctes' | 'grafana'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'sql', label: 'SQL' },
@@ -20,6 +21,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'limit', label: 'LIMIT' },
   { id: 'windows', label: 'Windows' },
   { id: 'ctes', label: 'CTEs' },
+  { id: 'grafana', label: 'Grafana' },
 ]
 
 export function RightPanel() {
@@ -45,17 +47,17 @@ export function RightPanel() {
       </div>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 min-w-0 overflow-hidden">
         {active === 'sql' && <SqlPreview />}
         {active === 'where' && (
-          <ScrollArea className="h-full">
+          <div className="h-full overflow-y-auto overflow-x-hidden">
             <WhereBuilder mode="where" />
-          </ScrollArea>
+          </div>
         )}
         {active === 'having' && (
-          <ScrollArea className="h-full">
+          <div className="h-full overflow-y-auto overflow-x-hidden">
             <WhereBuilder mode="having" />
-          </ScrollArea>
+          </div>
         )}
         {active === 'groupby' && (
           <ScrollArea className="h-full">
@@ -82,6 +84,7 @@ export function RightPanel() {
             <CtePanel />
           </ScrollArea>
         )}
+        {active === 'grafana' && <GrafanaPanel />}
       </div>
     </div>
   )

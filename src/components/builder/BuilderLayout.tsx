@@ -20,12 +20,10 @@ import { Save, FolderOpen, RotateCcw, Database, Copy } from 'lucide-react'
 import type { QueryResponse } from '@/types/api'
 
 export function BuilderLayout() {
-  const { queryState, generatedSql, loadQueryState, resetQuery } = useQueryStore((s) => ({
-    queryState: s.queryState,
-    generatedSql: s.generatedSql,
-    loadQueryState: s.loadQueryState,
-    resetQuery: s.resetQuery,
-  }))
+  const queryState = useQueryStore((s) => s.queryState)
+  const generatedSql = useQueryStore((s) => s.generatedSql)
+  const loadQueryState = useQueryStore((s) => s.loadQueryState)
+  const resetQuery = useQueryStore((s) => s.resetQuery)
 
   const [saveDialogOpen, setSaveDialogOpen] = useState(false)
   const [loadDialogOpen, setLoadDialogOpen] = useState(false)
@@ -112,7 +110,7 @@ export function BuilderLayout() {
           </div>
 
           {/* Right Panel */}
-          <div className="w-96 shrink-0 overflow-hidden">
+          <div className="w-96 shrink-0 overflow-hidden min-w-0">
             <RightPanel />
           </div>
         </div>

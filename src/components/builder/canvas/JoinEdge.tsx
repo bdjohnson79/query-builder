@@ -50,10 +50,8 @@ export function JoinEdge({
     targetPosition,
   })
 
-  const { updateJoin, removeJoin } = useQueryStore((s) => ({
-    updateJoin: s.updateJoin,
-    removeJoin: s.removeJoin,
-  }))
+  const updateJoin = useQueryStore((s) => s.updateJoin)
+  const removeJoin = useQueryStore((s) => s.removeJoin)
 
   const joinType = data?.joinType ?? 'INNER'
   const color = JOIN_COLORS[joinType]

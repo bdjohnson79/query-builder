@@ -52,3 +52,121 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans), system-ui, sans-serif;
 }
+
+/* react-querybuilder: two-line rule layout — field+operator+remove on line 1, value on line 2 */
+.rule {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rule .rule-fields,
+.rule .rule-operators {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 45%;
+}
+
+.rule .rule-remove {
+  flex: 0 0 auto;
+  order: 5;
+}
+
+/* Value editor always wraps to line 2 */
+.rule .rule-value {
+  order: 10;
+  flex: 0 0 100%;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rule .rule-value input,
+.rule .rule-value select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* react-querybuilder: inputs and selects — always visible with border + white background */
+.ruleGroup input,
+.ruleGroup select,
+.rule input,
+.rule select {
+  background-color: #ffffff !important;
+  border: 1px solid #94a3b8 !important;
+  border-radius: 4px !important;
+  padding: 3px 6px !important;
+  font-size: 0.75rem !important;
+  color: #0f172a !important;
+  box-sizing: border-box !important;
+  outline: none !important;
+}
+
+.ruleGroup input:focus,
+.ruleGroup select:focus,
+.rule input:focus,
+.rule select:focus {
+  border-color: #2563eb !important;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2) !important;
+}
+
+/* Combinator (AND/OR) */
+.ruleGroup .ruleGroup-combinators {
+  background-color: #eff6ff !important;
+  border: 1px solid #bfdbfe !important;
+  border-radius: 4px !important;
+  padding: 2px 6px !important;
+  font-size: 0.75rem !important;
+  font-weight: 600 !important;
+  color: #1d4ed8 !important;
+  cursor: pointer !important;
+}
+
+/* Remove (×) button */
+.rule-remove,
+.ruleGroup-remove {
+  background: none !important;
+  border: none !important;
+  color: #64748b !important;
+  cursor: pointer !important;
+  padding: 1px 4px !important;
+  border-radius: 4px !important;
+  font-size: 0.8rem !important;
+}
+
+.rule-remove:hover,
+.ruleGroup-remove:hover {
+  background-color: #fee2e2 !important;
+  color: #ef4444 !important;
+}
+
+/* + Rule / + Group buttons */
+.ruleGroup-addRule,
+.ruleGroup-addGroup {
+  background: none !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 4px !important;
+  padding: 2px 8px !important;
+  font-size: 0.7rem !important;
+  color: #64748b !important;
+  cursor: pointer !important;
+}
+
+.ruleGroup-addRule:hover,
+.ruleGroup-addGroup:hover {
+  border-color: #2563eb !important;
+  color: #2563eb !important;
+  background-color: #eff6ff !important;
+}
+
+/* Rule group body spacing */
+.ruleGroup-body {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 6px !important;
+}

@@ -1,9 +1,65 @@
 'use client'
 import { useQueryStore } from '@/store/queryStore'
-import QueryBuilder from 'react-querybuilder'
+import QueryBuilder, { defaultOperators } from 'react-querybuilder'
+import type { ValueEditorProps } from 'react-querybuilder'
 import 'react-querybuilder/dist/query-builder.css'
 import type { FilterGroup } from '@/types/query'
 import type { RuleGroupType } from 'react-querybuilder'
+
+const GRAFANA_OPERATORS = [
+  { name: '$__timeFilter',        label: '$__timeFilter(col)' },
+  { name: '$__unixEpochFilter',   label: '$__unixEpochFilter(col)' },
+  { name: '$__unixEpochNanoFilter', label: '$__unixEpochNanoFilter(col)' },
+]
+
+const ALL_OPERATORS = [
+  ...defaultOperators,
+  { name: 'separator', label: '──────────' },
+  ...GRAFANA_OPERATORS,
+]
+
+const GRAFANA_OP_NAMES = new Set(GRAFANA_OPERATORS.map((o) => o.name))
+
+function BetweenValueEditor({ value, handleOnChange }: ValueEditorProps) {
+  const parts = String(value ?? '').split(',')
+  const val1 = parts[0] ?? ''
+  const val2 = parts[1] ?? ''
+  return (
+    <div className="flex items-center gap-1 w-full">
+      <input
+        className="flex-1 min-w-0"
+        value={val1}
+        onChange={(e) => handleOnChange(`${e.target.value},${val2}`)}
+        placeholder="from"
+      />
+      <span className="shrink-0 text-[10px] text-slate-400 px-0.5">and</span>
+      <input
+        className="flex-1 min-w-0"
+        value={val2}
+        onChange={(e) => handleOnChange(`${val1},${e.target.value}`)}
+        placeholder="to"
+      />
+    </div>
+  )
+}
+
+function ValueEditor(props: ValueEditorProps) {
+  if (props.operator === 'between' || props.operator === 'notBetween') {
+    return <BetweenValueEditor {...props} />
+  }
+  // Grafana macro operators need no value input — the column is the argument
+  if (GRAFANA_OP_NAMES.has(props.operator)) {
+    return <span className="text-[10px] text-muted-foreground italic px-1">no value needed</span>
+  }
+  // Default: single input
+  return (
+    <input
+      className="w-full"
+      value={String(props.value ?? '')}
+      onChange={(e) => props.handleOnChange(e.target.value)}
+    />
+  )
+}
 
 function toRQB(group: FilterGroup): RuleGroupType {
   return {
@@ -38,13 +94,11 @@ interface Props {
 }
 
 export function WhereBuilder({ mode }: Props) {
-  const { where, having, tables, setWhere, setHaving } = useQueryStore((s) => ({
-    where: s.queryState.where,
-    having: s.queryState.having,
-    tables: s.queryState.tables,
-    setWhere: s.setWhere,
-    setHaving: s.setHaving,
-  }))
+  const where = useQueryStore((s) => s.queryState.where)
+  const having = useQueryStore((s) => s.queryState.having)
+  const tables = useQueryStore((s) => s.queryState.tables)
+  const setWhere = useQueryStore((s) => s.setWhere)
+  const setHaving = useQueryStore((s) => s.setHaving)
 
   const fields = tables.flatMap((t) =>
     t.columns.map((c) => ({
@@ -62,13 +116,19 @@ export function WhereBuilder({ mode }: Props) {
   }
 
   return (
-    <div className="p-2">
+    <div className="p-2 w-full">
       {fields.length === 0 ? (
         <p className="text-xs text-muted-foreground text-center py-4">
           Add tables to the canvas to build filters.
         </p>
       ) : (
-        <QueryBuilder fields={fields} query={query} onQueryChange={handleChange} />
+        <QueryBuilder
+          fields={fields}
+          query={query}
+          onQueryChange={handleChange}
+          operators={ALL_OPERATORS}
+          controlElements={{ valueEditor: ValueEditor }}
+        />
       )}
     </div>
   )

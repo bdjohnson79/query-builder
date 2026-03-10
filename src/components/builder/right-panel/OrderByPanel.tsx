@@ -6,11 +6,9 @@ import { X, Plus } from 'lucide-react'
 import type { OrderByItem } from '@/types/query'
 
 export function OrderByPanel() {
-  const { tables, orderBy, setOrderBy } = useQueryStore((s) => ({
-    tables: s.queryState.tables,
-    orderBy: s.queryState.orderBy,
-    setOrderBy: s.setOrderBy,
-  }))
+  const tables = useQueryStore((s) => s.queryState.tables)
+  const orderBy = useQueryStore((s) => s.queryState.orderBy)
+  const setOrderBy = useQueryStore((s) => s.setOrderBy)
 
   const allColumns = tables.flatMap((t) =>
     t.columns.map((c) => ({ tableAlias: t.alias, columnName: c.name }))
@@ -63,12 +61,12 @@ export function OrderByPanel() {
             </SelectContent>
           </Select>
 
-          <Select value={item.nulls ?? ''} onValueChange={(v) => update(i, { nulls: v === '' ? undefined : v as OrderByItem['nulls'] })}>
+          <Select value={item.nulls ?? 'default'} onValueChange={(v) => update(i, { nulls: v === 'default' ? undefined : v as OrderByItem['nulls'] })}>
             <SelectTrigger className="w-28 h-8 text-xs">
               <SelectValue placeholder="NULLS…" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="" className="text-xs">Default</SelectItem>
+              <SelectItem value="default" className="text-xs">Default</SelectItem>
               <SelectItem value="NULLS FIRST" className="text-xs">NULLS FIRST</SelectItem>
               <SelectItem value="NULLS LAST" className="text-xs">NULLS LAST</SelectItem>
             </SelectContent>

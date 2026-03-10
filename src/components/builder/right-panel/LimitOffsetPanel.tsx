@@ -4,12 +4,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
 export function LimitOffsetPanel() {
-  const { limit, offset, setLimit, setOffset } = useQueryStore((s) => ({
-    limit: s.queryState.limit,
-    offset: s.queryState.offset,
-    setLimit: s.setLimit,
-    setOffset: s.setOffset,
-  }))
+  const limit = useQueryStore((s) => s.queryState.limit)
+  const offset = useQueryStore((s) => s.queryState.offset)
+  const setLimit = useQueryStore((s) => s.setLimit)
+  const setOffset = useQueryStore((s) => s.setOffset)
 
   return (
     <div className="grid grid-cols-2 gap-3 p-2">

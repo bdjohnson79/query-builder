@@ -45,12 +45,10 @@ function joinToEdge(join: JoinDef): Edge {
 }
 
 export function QueryCanvas() {
-  const { queryState, addTable, updateTablePosition, addJoin } = useQueryStore((s) => ({
-    queryState: s.queryState,
-    addTable: s.addTable,
-    updateTablePosition: s.updateTablePosition,
-    addJoin: s.addJoin,
-  }))
+  const queryState = useQueryStore((s) => s.queryState)
+  const addTable = useQueryStore((s) => s.addTable)
+  const updateTablePosition = useQueryStore((s) => s.updateTablePosition)
+  const addJoin = useQueryStore((s) => s.addJoin)
 
   const initialNodes = useMemo(
     () => queryState.tables.map(tableToNode),
@@ -118,7 +116,11 @@ export function QueryCanvas() {
       // Check not already on canvas
       if (queryState.tables.find((t) => t.tableId === table.id)) return
 
-      const alias = `${table.name}_${queryState.tables.length + 1}`
+      // Default alias = table name; append _2, _3 … only on collision
+      const existing = new Set(queryState.tables.map((t) => t.alias))
+      let alias = table.name
+      let counter = 2
+      while (existing.has(alias)) alias = `${table.name}_${counter++}`
       const instance: TableInstance = {
         id: crypto.randomUUID(),
         tableId: table.id,

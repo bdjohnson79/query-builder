@@ -4,11 +4,9 @@ import { Checkbox } from '@/components/ui/checkbox'
 import type { ColumnRef } from '@/types/query'
 
 export function GroupByPanel() {
-  const { tables, groupBy, setGroupBy } = useQueryStore((s) => ({
-    tables: s.queryState.tables,
-    groupBy: s.queryState.groupBy,
-    setGroupBy: s.setGroupBy,
-  }))
+  const tables = useQueryStore((s) => s.queryState.tables)
+  const groupBy = useQueryStore((s) => s.queryState.groupBy)
+  const setGroupBy = useQueryStore((s) => s.setGroupBy)
 
   const isSelected = (ref: ColumnRef) =>
     groupBy.some((g) => g.tableAlias === ref.tableAlias && g.columnName === ref.columnName)

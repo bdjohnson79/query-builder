@@ -9,14 +9,11 @@ import type { WindowFunctionDef } from '@/types/query'
 const WINDOW_FNS = ['ROW_NUMBER', 'RANK', 'DENSE_RANK', 'SUM', 'AVG', 'COUNT', 'MIN', 'MAX', 'LAG', 'LEAD', 'NTILE', 'PERCENT_RANK', 'CUME_DIST']
 
 export function WindowFunctionPanel() {
-  const { windowFunctions, tables, addWindowFunction, updateWindowFunction, removeWindowFunction } =
-    useQueryStore((s) => ({
-      windowFunctions: s.queryState.windowFunctions,
-      tables: s.queryState.tables,
-      addWindowFunction: s.addWindowFunction,
-      updateWindowFunction: s.updateWindowFunction,
-      removeWindowFunction: s.removeWindowFunction,
-    }))
+  const windowFunctions = useQueryStore((s) => s.queryState.windowFunctions)
+  const tables = useQueryStore((s) => s.queryState.tables)
+  const addWindowFunction = useQueryStore((s) => s.addWindowFunction)
+  const updateWindowFunction = useQueryStore((s) => s.updateWindowFunction)
+  const removeWindowFunction = useQueryStore((s) => s.removeWindowFunction)
 
   const addNew = () => {
     const wf: WindowFunctionDef = {

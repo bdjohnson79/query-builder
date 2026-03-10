@@ -9,7 +9,9 @@ import { Search, Database } from 'lucide-react'
 import type { AppSchema, AppTable, AppColumn } from '@/types/schema'
 
 export function TableLibrary() {
-  const { setSchemas, setTables, setColumnsForTable } = useSchemaStore()
+  const setSchemas = useSchemaStore((s) => s.setSchemas)
+  const setTables = useSchemaStore((s) => s.setTables)
+  const setColumnsForTable = useSchemaStore((s) => s.setColumnsForTable)
   const schemas = useSchemaStore((s) => s.schemas)
   const tables = useSchemaStore((s) => s.tables)
   const columns = useSchemaStore((s) => s.columns)
