@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { subscribeWithSelector } from 'zustand/middleware'
+import { subscribeWithSelector, persist } from 'zustand/middleware'
 import { buildSql } from '@/lib/sql-builder'
 import {
   emptyQueryState,
@@ -65,6 +65,7 @@ function rebuildSql(state: QueryState): string {
 }
 
 export const useQueryStore = create<QueryStore>()(
+  persist(
   subscribeWithSelector((set, get) => ({
     queryState: emptyQueryState(),
     generatedSql: '-- Drag a table onto the canvas to start',
@@ -297,5 +298,15 @@ export const useQueryStore = create<QueryStore>()(
 
     resetQuery: () =>
       set({ queryState: emptyQueryState(), generatedSql: '-- Drag a table onto the canvas to start' }),
-  }))
+  })),
+  {
+    name: 'query-builder-state',
+    partialize: (state) => ({ queryState: state.queryState }),
+    onRehydrateStorage: () => (state) => {
+      if (state?.queryState) {
+        state.generatedSql = buildSql(state.queryState)
+      }
+    },
+  }
+  )
 )

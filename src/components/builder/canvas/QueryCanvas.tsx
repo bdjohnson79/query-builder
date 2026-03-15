@@ -32,12 +32,14 @@ function tableToNode(instance: TableInstance): Node {
   }
 }
 
-function joinToEdge(join: JoinDef): Edge {
+function joinToEdge(join: JoinDef, tables: TableInstance[]): Edge {
+  const leftTable = tables.find((t) => t.alias === join.leftTableAlias)
+  const rightTable = tables.find((t) => t.alias === join.rightTableAlias)
   return {
     id: join.id,
-    source: `${join.leftTableAlias}-node`,
+    source: leftTable?.id ?? join.leftTableAlias,
     sourceHandle: `${join.leftTableAlias}__${join.leftColumn}__source`,
-    target: `${join.rightTableAlias}-node`,
+    target: rightTable?.id ?? join.rightTableAlias,
     targetHandle: `${join.rightTableAlias}__${join.rightColumn}__target`,
     type: 'joinEdge',
     data: { joinId: join.id, joinType: join.type },
@@ -56,7 +58,7 @@ export function QueryCanvas() {
     []
   )
   const initialEdges = useMemo(
-    () => queryState.joins.map(joinToEdge),
+    () => queryState.joins.map((j) => joinToEdge(j, queryState.tables)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   )
@@ -67,7 +69,7 @@ export function QueryCanvas() {
   // Sync store → nodes/edges
   useMemo(() => {
     setNodes(queryState.tables.map(tableToNode))
-    setEdges(queryState.joins.map(joinToEdge))
+    setEdges(queryState.joins.map((j) => joinToEdge(j, queryState.tables)))
   }, [queryState.tables, queryState.joins, setNodes, setEdges])
 
   const onConnect = useCallback(
@@ -112,9 +114,6 @@ export function QueryCanvas() {
         schema: AppSchema
         columns: AppColumn[]
       }
-
-      // Check not already on canvas
-      if (queryState.tables.find((t) => t.tableId === table.id)) return
 
       // Default alias = table name; append _2, _3 … only on collision
       const existing = new Set(queryState.tables.map((t) => t.alias))

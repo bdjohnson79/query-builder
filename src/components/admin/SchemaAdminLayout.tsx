@@ -66,6 +66,17 @@ function SchemaAdminInner() {
       setSelectedSchema(updated[0] ?? null)
       setSelectedTable(null)
     }
+    toast('Schema deleted')
+  }
+
+  const deleteTable = async (table: AppTable, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!confirm(`Delete table "${table.displayName ?? table.name}" and all its columns?`)) return
+    await api.tables.delete(table.id)
+    const updated = tables.filter((t) => t.id !== table.id)
+    setTables(updated)
+    if (selectedTable?.id === table.id) setSelectedTable(null)
+    toast(`Table "${table.displayName ?? table.name}" deleted`)
   }
 
   const selectTable = (table: (AppTable & { columns: AppColumn[] }) | null) => {
@@ -110,14 +121,14 @@ function SchemaAdminInner() {
             <div
               key={schema.id}
               className={cn(
-                'flex items-center justify-between rounded-md px-2 py-1.5 cursor-pointer transition-colors',
+                'group flex items-center justify-between rounded-md px-2 py-1.5 cursor-pointer transition-colors',
                 selectedSchema?.id === schema.id ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
               )}
               onClick={() => { setSelectedSchema(schema); selectTable(null) }}
             >
               <span className="text-sm truncate">{schema.name}</span>
               <button
-                className="opacity-0 group-hover:opacity-100 hover:opacity-100 shrink-0"
+                className="opacity-0 group-hover:opacity-100 shrink-0"
                 onClick={(e) => { e.stopPropagation(); deleteSchema(schema.id) }}
               >
                 <Trash2 className="h-3 w-3 text-destructive" />
@@ -153,7 +164,7 @@ function SchemaAdminInner() {
             <div
               key={table.id}
               className={cn(
-                'flex items-center justify-between rounded-md px-2 py-1.5 cursor-pointer transition-colors',
+                'group flex items-center justify-between rounded-md px-2 py-1.5 cursor-pointer transition-colors',
                 rightView === 'table' && selectedTable?.id === table.id
                   ? 'bg-accent text-accent-foreground'
                   : 'hover:bg-accent/50'
@@ -161,7 +172,12 @@ function SchemaAdminInner() {
               onClick={() => selectTable(table)}
             >
               <span className="text-sm truncate">{table.displayName ?? table.name}</span>
-              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <button
+                className="opacity-0 group-hover:opacity-100 shrink-0"
+                onClick={(e) => deleteTable(table, e)}
+              >
+                <Trash2 className="h-3 w-3 text-destructive" />
+              </button>
             </div>
           ))}
 
