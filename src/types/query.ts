@@ -1,5 +1,8 @@
 // Core query state types for the SQL Query Builder
 
+import type { JsonbMapping } from './json-structure'
+export type { JsonbMapping }
+
 export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL OUTER' | 'CROSS'
 
 export interface ColumnRef {
@@ -94,6 +97,7 @@ export interface QueryState {
   offset: number | null
   ctes: CTEDef[]
   isSubquery: boolean
+  jsonbMappings: JsonbMapping[]
 }
 
 export function emptyFilterGroup(): FilterGroup {
@@ -115,5 +119,6 @@ export function emptyQueryState(): QueryState {
     offset: null,
     ctes: [],
     isSubquery: false,
+    jsonbMappings: [],
   }
 }

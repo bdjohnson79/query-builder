@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { DndContext, type DragEndEvent } from '@dnd-kit/core'
 import { TableLibrary } from './left-panel/TableLibrary'
 import { QueryCanvas } from './canvas/QueryCanvas'
@@ -15,6 +15,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useQueryStore } from '@/store/queryStore'
+import { useJsonStructureStore } from '@/store/jsonStructureStore'
 import { api } from '@/lib/api/client'
 import { Save, FolderOpen, RotateCcw, Database, Copy } from 'lucide-react'
 import type { QueryResponse } from '@/types/api'
@@ -24,6 +25,9 @@ export function BuilderLayout() {
   const generatedSql = useQueryStore((s) => s.generatedSql)
   const loadQueryState = useQueryStore((s) => s.loadQueryState)
   const resetQuery = useQueryStore((s) => s.resetQuery)
+
+  const loadStructures = useJsonStructureStore((s) => s.loadStructures)
+  useEffect(() => { loadStructures() }, [loadStructures])
 
   const [saveDialogOpen, setSaveDialogOpen] = useState(false)
   const [loadDialogOpen, setLoadDialogOpen] = useState(false)

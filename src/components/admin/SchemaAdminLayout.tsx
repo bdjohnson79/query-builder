@@ -103,6 +103,9 @@ function SchemaAdminInner() {
           <Database className="h-4 w-4 text-blue-600" />
           Schema Admin
         </div>
+        <a href="/admin/json-structures" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
+          JSON Structures
+        </a>
         <a href="/builder" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
           ← Query Builder
         </a>

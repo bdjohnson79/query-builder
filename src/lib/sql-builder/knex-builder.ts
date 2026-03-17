@@ -213,15 +213,46 @@ function buildFilterGroup(group: FilterGroup): string {
   return parts.join(` ${group.combinator} `)
 }
 
+/** Build a JSONB path extraction expression.
+ * Single segment → alias."col"->>'key'
+ * Multi segment  → alias."col"#>>'{parent,child}'
+ * Optional pgCast → wraps in (...)::cast
+ */
+function buildJsonbPathExpr(tableAlias: string, colName: string, dotPath: string, pgCast?: string): string {
+  const segments = dotPath.split('.')
+  const base = `${qi(tableAlias)}.${qi(colName)}`
+  let expr: string
+  if (segments.length === 1) {
+    expr = `${base}->>'${segments[0]}'`
+  } else {
+    expr = `${base}#>>'{${segments.join(',')}}'`
+  }
+  return pgCast ? `(${expr})::${pgCast}` : expr
+}
+
+const JSONB_MARKER = '::jsonb::'
+
 function buildRuleFragment(rule: FilterRule): string | null {
   const field = rule.field  // "alias.column" — unquoted from react-querybuilder
   const val = rule.value
 
-  // Quote the field reference properly
-  const fieldParts = field.split('.')
-  const quotedField = fieldParts.length === 2
-    ? `${qi(fieldParts[0])}.${qi(fieldParts[1])}`
-    : field
+  // Detect JSONB path: "alias::jsonb::columnName::dot.path"
+  let quotedField: string
+  if (field.includes(JSONB_MARKER)) {
+    const markerIdx = field.indexOf(JSONB_MARKER)
+    const tableAlias = field.slice(0, markerIdx)
+    const rest = field.slice(markerIdx + JSONB_MARKER.length)
+    const colonIdx = rest.indexOf('::')
+    const colName = rest.slice(0, colonIdx)
+    const dotPath = rest.slice(colonIdx + 2)
+    quotedField = buildJsonbPathExpr(tableAlias, colName, dotPath)
+  } else {
+    // Quote the field reference properly
+    const fieldParts = field.split('.')
+    quotedField = fieldParts.length === 2
+      ? `${qi(fieldParts[0])}.${qi(fieldParts[1])}`
+      : field
+  }
 
   switch (rule.operator) {
     case '=':

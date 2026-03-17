@@ -47,6 +47,15 @@ export const appForeignKeys = pgTable('app_foreign_keys', {
   constraintName: text('constraint_name'),
 })
 
+export const jsonStructures = pgTable('json_structures', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull().unique(),
+  description: text('description'),
+  definition: jsonb('definition').notNull(), // JsonStructureDefinition
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+})
+
 export const savedQueries = pgTable('saved_queries', {
   id: serial('id').primaryKey(),
   name: text('name').notNull(),

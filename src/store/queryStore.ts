@@ -14,6 +14,7 @@ import {
   type FilterRule,
   type WindowFunctionDef,
   type CTEDef,
+  type JsonbMapping,
 } from '@/types/query'
 
 interface QueryStore {
@@ -55,6 +56,10 @@ interface QueryStore {
   updateCte: (id: string, updates: Partial<CTEDef>) => void
   removeCte: (id: string) => void
 
+  // JSONB mappings
+  setJsonbMapping: (tableAlias: string, columnName: string, structureId: number) => void
+  clearJsonbMapping: (tableAlias: string, columnName: string) => void
+
   // State management
   loadQueryState: (state: QueryState) => void
   resetQuery: () => void
@@ -78,15 +83,18 @@ export const useQueryStore = create<QueryStore>()(
 
     removeTable: (instanceId) =>
       set((s) => {
+        const alias = s.queryState.tables.find(t => t.id === instanceId)?.alias
         const next: QueryState = {
           ...s.queryState,
           tables: s.queryState.tables.filter((t) => t.id !== instanceId),
           joins: s.queryState.joins.filter(
-            (j) => j.leftTableAlias !== s.queryState.tables.find(t => t.id === instanceId)?.alias &&
-                   j.rightTableAlias !== s.queryState.tables.find(t => t.id === instanceId)?.alias
+            (j) => j.leftTableAlias !== alias && j.rightTableAlias !== alias
           ),
           selectedColumns: s.queryState.selectedColumns.filter(
-            (c) => c.tableAlias !== s.queryState.tables.find(t => t.id === instanceId)?.alias
+            (c) => c.tableAlias !== alias
+          ),
+          jsonbMappings: s.queryState.jsonbMappings.filter(
+            (m) => m.tableAlias !== alias
           ),
         }
         return { queryState: next, generatedSql: rebuildSql(next) }
@@ -148,6 +156,9 @@ export const useQueryStore = create<QueryStore>()(
           })),
           where: renameFilter(s.queryState.where),
           having: renameFilter(s.queryState.having),
+          jsonbMappings: s.queryState.jsonbMappings.map((m) =>
+            m.tableAlias === old ? { ...m, tableAlias: newAlias } : m
+          ),
         }
         return { queryState: next, generatedSql: rebuildSql(next) }
       }),
@@ -293,6 +304,29 @@ export const useQueryStore = create<QueryStore>()(
         return { queryState: next, generatedSql: rebuildSql(next) }
       }),
 
+    setJsonbMapping: (tableAlias, columnName, structureId) =>
+      set((s) => {
+        const filtered = s.queryState.jsonbMappings.filter(
+          (m) => !(m.tableAlias === tableAlias && m.columnName === columnName)
+        )
+        const next: QueryState = {
+          ...s.queryState,
+          jsonbMappings: [...filtered, { tableAlias, columnName, structureId } as JsonbMapping],
+        }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
+    clearJsonbMapping: (tableAlias, columnName) =>
+      set((s) => {
+        const next: QueryState = {
+          ...s.queryState,
+          jsonbMappings: s.queryState.jsonbMappings.filter(
+            (m) => !(m.tableAlias === tableAlias && m.columnName === columnName)
+          ),
+        }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
     loadQueryState: (state) =>
       set({ queryState: state, generatedSql: rebuildSql(state) }),
 
@@ -304,6 +338,8 @@ export const useQueryStore = create<QueryStore>()(
     partialize: (state) => ({ queryState: state.queryState }),
     onRehydrateStorage: () => (state) => {
       if (state?.queryState) {
+        // Backfill fields added after initial release so old persisted states don't crash
+        if (!state.queryState.jsonbMappings) state.queryState.jsonbMappings = []
         state.generatedSql = buildSql(state.queryState)
       }
     },

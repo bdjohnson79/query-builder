@@ -1,10 +1,12 @@
 'use client'
 import { useQueryStore } from '@/store/queryStore'
+import { useJsonStructureStore } from '@/store/jsonStructureStore'
 import QueryBuilder, { defaultOperators } from 'react-querybuilder'
 import type { ValueEditorProps } from 'react-querybuilder'
 import 'react-querybuilder/dist/query-builder.css'
 import type { FilterGroup } from '@/types/query'
 import type { RuleGroupType } from 'react-querybuilder'
+import { flattenToPathOptions } from '@/lib/json-structure/infer'
 
 const GRAFANA_OPERATORS = [
   { name: '$__timeFilter',        label: '$__timeFilter(col)' },
@@ -97,15 +99,28 @@ export function WhereBuilder({ mode }: Props) {
   const where = useQueryStore((s) => s.queryState.where)
   const having = useQueryStore((s) => s.queryState.having)
   const tables = useQueryStore((s) => s.queryState.tables)
+  const jsonbMappings = useQueryStore((s) => s.queryState.jsonbMappings)
   const setWhere = useQueryStore((s) => s.setWhere)
   const setHaving = useQueryStore((s) => s.setHaving)
+  const structures = useJsonStructureStore((s) => s.structures)
 
-  const fields = tables.flatMap((t) =>
+  const regularFields = tables.flatMap((t) =>
     t.columns.map((c) => ({
       name: `${t.alias}.${c.name}`,
       label: `${t.alias}.${c.name}`,
     }))
   )
+
+  const jsonbFields = jsonbMappings.flatMap((m) => {
+    const structure = structures.find((s) => s.id === m.structureId)
+    if (!structure) return []
+    return flattenToPathOptions(structure.definition.fields, m.tableAlias, m.columnName).map((opt) => ({
+      name: `${m.tableAlias}::jsonb::${m.columnName}::${opt.path}`,
+      label: `${m.tableAlias}.${m.columnName} → ${opt.label}`,
+    }))
+  })
+
+  const fields = [...regularFields, ...jsonbFields]
 
   const query = toRQB(mode === 'where' ? where : having)
 

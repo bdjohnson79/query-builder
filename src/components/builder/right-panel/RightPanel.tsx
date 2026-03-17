@@ -8,9 +8,10 @@ import { LimitOffsetPanel } from './LimitOffsetPanel'
 import { WindowFunctionPanel } from './WindowFunctionPanel'
 import { CtePanel } from './CtePanel'
 import { GrafanaPanel } from './GrafanaPanel'
+import { JsonbMappingPanel } from './JsonbMappingPanel'
 import { ScrollArea } from '@/components/ui/scroll-area'
 
-type Tab = 'sql' | 'where' | 'having' | 'groupby' | 'orderby' | 'limit' | 'windows' | 'ctes' | 'grafana'
+type Tab = 'sql' | 'where' | 'having' | 'groupby' | 'orderby' | 'limit' | 'windows' | 'ctes' | 'grafana' | 'jsonb'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'sql', label: 'SQL' },
@@ -22,6 +23,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'windows', label: 'Windows' },
   { id: 'ctes', label: 'CTEs' },
   { id: 'grafana', label: 'Grafana' },
+  { id: 'jsonb', label: 'JSONB' },
 ]
 
 export function RightPanel() {
@@ -85,6 +87,11 @@ export function RightPanel() {
           </ScrollArea>
         )}
         {active === 'grafana' && <GrafanaPanel />}
+        {active === 'jsonb' && (
+          <ScrollArea className="h-full">
+            <JsonbMappingPanel />
+          </ScrollArea>
+        )}
       </div>
     </div>
   )

@@ -1,10 +1,12 @@
 'use client'
 import { memo, useCallback, useState } from 'react'
 import { Handle, Position, type NodeProps } from 'reactflow'
-import { X, Key } from 'lucide-react'
+import { X, Key, ChevronDown, ChevronRight, Braces } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
 import { useQueryStore } from '@/store/queryStore'
+import { useJsonStructureStore } from '@/store/jsonStructureStore'
+import { flattenToPathOptions } from '@/lib/json-structure/infer'
 import type { TableInstance, ColumnMeta, SelectedColumn } from '@/types/query'
 
 interface TableNodeData {
@@ -14,9 +16,11 @@ interface TableNodeData {
 export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeData>) {
   const { instance } = data
   const selectedColumns = useQueryStore((s) => s.queryState.selectedColumns)
+  const jsonbMappings = useQueryStore((s) => s.queryState.jsonbMappings)
   const toggleColumn = useQueryStore((s) => s.toggleColumn)
   const removeTable = useQueryStore((s) => s.removeTable)
   const updateTableAlias = useQueryStore((s) => s.updateTableAlias)
+  const structures = useJsonStructureStore((s) => s.structures)
 
   const [editingAlias, setEditingAlias] = useState(false)
   const [aliasInput, setAliasInput] = useState(instance.alias)
@@ -43,6 +47,45 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
       columnName: col.name,
     }
     toggleColumn(col_)
+  }
+
+  const [expandedJsonb, setExpandedJsonb] = useState<Record<string, boolean>>({})
+
+  const toggleJsonbExpand = (colName: string) => {
+    setExpandedJsonb((prev) => ({ ...prev, [colName]: !prev[colName] }))
+  }
+
+  const isJsonbPathSelected = useCallback(
+    (colName: string, path: string) =>
+      selectedColumns.some(
+        (c) =>
+          c.tableAlias === instance.alias &&
+          c.columnName === colName &&
+          c.expression !== undefined &&
+          c.expression.includes(`::jsonb::`) === false &&
+          // Match by the expression key segment or alias
+          (c.alias === path.split('.').pop() || c.expression?.includes(`'${path.split('.').pop()}'`))
+      ),
+    [selectedColumns, instance.alias]
+  )
+
+  const handleJsonbPathToggle = (col: ColumnMeta, pathLabel: string, expression: string) => {
+    const alias = pathLabel.split('.').pop() ?? pathLabel
+    const existing = selectedColumns.find(
+      (c) => c.tableAlias === instance.alias && c.expression === expression
+    )
+    if (existing) {
+      toggleColumn(existing)
+    } else {
+      const col_: SelectedColumn = {
+        id: crypto.randomUUID(),
+        tableAlias: instance.alias,
+        columnName: col.name,
+        expression,
+        alias,
+      }
+      toggleColumn(col_)
+    }
   }
 
   return (
@@ -80,48 +123,99 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
 
       {/* Columns */}
       <div className="divide-y divide-border">
-        {instance.columns.map((col) => (
-          <div
-            key={col.id}
-            className="relative flex items-center gap-1.5 px-2 py-0.5 hover:bg-muted/50"
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            {/* Left handle for join target */}
-            <Handle
-              type="target"
-              position={Position.Left}
-              id={`${instance.alias}__${col.name}__target`}
-              className="!h-1.5 !w-1.5 !border-blue-400 !bg-white"
-            />
+        {instance.columns.map((col) => {
+          const isJsonb = col.pgType === 'jsonb' || col.pgType === 'json'
+          const mapping = isJsonb
+            ? jsonbMappings.find((m) => m.tableAlias === instance.alias && m.columnName === col.name)
+            : undefined
+          const structure = mapping ? structures.find((s) => s.id === mapping.structureId) : undefined
+          const pathOptions = structure
+            ? flattenToPathOptions(structure.definition.fields, instance.alias, col.name)
+            : []
+          const isExpanded = expandedJsonb[col.name] ?? false
 
-            <Checkbox
-              checked={isSelected(col)}
-              onCheckedChange={() => handleToggle(col)}
-              id={`${instance.id}-${col.id}`}
-              className="h-3 w-3"
-            />
+          return (
+            <div key={col.id}>
+              <div
+                className="relative flex items-center gap-1.5 px-2 py-0.5 hover:bg-muted/50"
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                {/* Left handle for join target */}
+                <Handle
+                  type="target"
+                  position={Position.Left}
+                  id={`${instance.alias}__${col.name}__target`}
+                  className="!h-1.5 !w-1.5 !border-blue-400 !bg-white"
+                />
 
-            <label
-              htmlFor={`${instance.id}-${col.id}`}
-              className={cn(
-                'flex flex-1 cursor-pointer items-center gap-1 text-[10px]',
-                col.isPrimaryKey && 'font-medium'
-              )}
-            >
-              {col.isPrimaryKey && <Key className="h-2 w-2 text-amber-500" />}
-              <span className="truncate">{col.name}</span>
-              <span className="ml-auto text-[8px] text-muted-foreground">{col.pgType}</span>
-            </label>
+                <Checkbox
+                  checked={isSelected(col)}
+                  onCheckedChange={() => handleToggle(col)}
+                  id={`${instance.id}-${col.id}`}
+                  className="h-3 w-3"
+                />
 
-            {/* Right handle for join source */}
-            <Handle
-              type="source"
-              position={Position.Right}
-              id={`${instance.alias}__${col.name}__source`}
-              className="!h-1.5 !w-1.5 !border-blue-400 !bg-white"
-            />
-          </div>
-        ))}
+                <label
+                  htmlFor={`${instance.id}-${col.id}`}
+                  className={cn(
+                    'flex flex-1 cursor-pointer items-center gap-1 text-[10px]',
+                    col.isPrimaryKey && 'font-medium'
+                  )}
+                >
+                  {col.isPrimaryKey && <Key className="h-2 w-2 text-amber-500" />}
+                  <span className="truncate">{col.name}</span>
+                  <span className="ml-auto text-[8px] text-muted-foreground">{col.pgType}</span>
+                </label>
+
+                {/* JSONB expand toggle */}
+                {isJsonb && pathOptions.length > 0 && (
+                  <button
+                    className="shrink-0 text-blue-500 hover:text-blue-700"
+                    onClick={() => toggleJsonbExpand(col.name)}
+                    title="Expand JSONB paths"
+                  >
+                    {isExpanded
+                      ? <ChevronDown className="h-2.5 w-2.5" />
+                      : <ChevronRight className="h-2.5 w-2.5" />}
+                  </button>
+                )}
+                {isJsonb && !structure && (
+                  <span title="Map a structure in the JSONB tab">
+                    <Braces className="h-2.5 w-2.5 text-muted-foreground shrink-0" />
+                  </span>
+                )}
+
+                {/* Right handle for join source */}
+                <Handle
+                  type="source"
+                  position={Position.Right}
+                  id={`${instance.alias}__${col.name}__source`}
+                  className="!h-1.5 !w-1.5 !border-blue-400 !bg-white"
+                />
+              </div>
+
+              {/* JSONB path rows */}
+              {isExpanded && pathOptions.map((opt) => {
+                const pathSelected = selectedColumns.some((c) => c.expression === opt.pgExpression)
+                return (
+                  <div
+                    key={opt.path}
+                    className="flex items-center gap-1.5 bg-blue-50/50 pl-8 pr-2 py-0.5 hover:bg-blue-50"
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <Checkbox
+                      checked={pathSelected}
+                      onCheckedChange={() => handleJsonbPathToggle(col, opt.path, opt.pgExpression)}
+                      className="h-2.5 w-2.5"
+                    />
+                    <span className="text-[9px] text-blue-700 truncate flex-1">{opt.label}</span>
+                    <span className="text-[8px] text-muted-foreground shrink-0">{opt.valueType}</span>
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })}
       </div>
     </div>
   )

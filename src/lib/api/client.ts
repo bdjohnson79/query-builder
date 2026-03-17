@@ -7,6 +7,7 @@ import type {
   CreateForeignKeyBody, ForeignKeysResponse, ForeignKeyResponse,
   CreateQueryBody, UpdateQueryBody, QueriesResponse, QueryResponse,
   LlmSuggestBody, LlmSuggestResponse,
+  CreateJsonStructureBody, UpdateJsonStructureBody, JsonStructuresResponse, JsonStructureResponse,
 } from '@/types/api'
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -94,5 +95,22 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(body),
       }),
+  },
+
+  jsonStructures: {
+    list: () => apiFetch<JsonStructuresResponse>('/api/json-structures'),
+    get: (id: number) => apiFetch<JsonStructureResponse>(`/api/json-structures/${id}`),
+    create: (body: CreateJsonStructureBody) =>
+      apiFetch<JsonStructureResponse>('/api/json-structures', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    update: (id: number, body: UpdateJsonStructureBody) =>
+      apiFetch<JsonStructureResponse>(`/api/json-structures/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    delete: (id: number) =>
+      apiFetch<void>(`/api/json-structures/${id}`, { method: 'DELETE' }),
   },
 }

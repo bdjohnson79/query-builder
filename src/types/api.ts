@@ -2,6 +2,7 @@
 
 import type { AppSchema, AppTable, AppColumn, AppForeignKey, SavedQuery } from './schema'
 import type { QueryState } from './query'
+import type { JsonStructure, JsonStructureDefinition } from './json-structure'
 
 // Schemas
 export interface CreateSchemaBody { name: string }
@@ -58,6 +59,20 @@ export interface LlmSuggestBody {
 export interface LlmSuggestResponse {
   queryState: QueryState
 }
+
+// JSON Structures
+export interface CreateJsonStructureBody {
+  name: string
+  description?: string
+  definition: JsonStructureDefinition
+}
+export interface UpdateJsonStructureBody {
+  name?: string
+  description?: string | null
+  definition?: JsonStructureDefinition
+}
+export type JsonStructureResponse = JsonStructure
+export type JsonStructuresResponse = JsonStructure[]
 
 // Generic API error
 export interface ApiError {
