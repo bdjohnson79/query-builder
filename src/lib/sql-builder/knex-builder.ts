@@ -106,6 +106,16 @@ function buildRawSql(state: QueryState): string {
   const primaryAs = primaryTable.alias !== primaryTable.tableName ? ` AS ${qi(primaryTable.alias)}` : ''
   parts.push(`FROM ${primaryRef}${primaryAs}`)
 
+  // JSONB expand-as-record CROSS JOINs (must come after main FROM, before regular JOINs)
+  const jsonbExpansions = state.jsonbExpansions ?? []
+  for (const exp of jsonbExpansions) {
+    if (exp.fields.length === 0) continue
+    const fieldList = exp.fields.map((f) => `${qi(f.name)} ${f.pgType}`).join(', ')
+    parts.push(
+      `CROSS JOIN jsonb_to_record(${qi(exp.tableAlias)}.${qi(exp.columnName)}) ${qi(exp.expandAlias)}(${fieldList})`
+    )
+  }
+
   // JOINs
   for (const join of joins) {
     const rightTable = tables.find(t => t.alias === join.rightTableAlias)
@@ -163,12 +173,22 @@ function buildSelectList(
   const cols: string[] = []
 
   for (const col of selectedColumns) {
-    if (col.expression) {
-      cols.push(col.alias ? `${col.expression} AS ${qi(col.alias)}` : col.expression)
+    // Base reference: expression or table.column
+    const ref = col.expression
+      ? col.expression
+      : `${qi(col.tableAlias)}.${qi(col.columnName)}`
+
+    // Wrap with aggregate function if set
+    let expr: string
+    if (col.aggregate === 'COUNT DISTINCT') {
+      expr = `COUNT(DISTINCT ${ref})`
+    } else if (col.aggregate) {
+      expr = `${col.aggregate}(${ref})`
     } else {
-      const ref = `${qi(col.tableAlias)}.${qi(col.columnName)}`
-      cols.push(col.alias ? `${ref} AS ${qi(col.alias)}` : ref)
+      expr = ref
     }
+
+    cols.push(col.alias ? `${expr} AS ${qi(col.alias)}` : expr)
   }
 
   for (const wf of windowFunctions) {

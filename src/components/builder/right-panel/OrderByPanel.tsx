@@ -1,23 +1,20 @@
 'use client'
 import { useQueryStore } from '@/store/queryStore'
+import { useAvailableColumns } from '@/hooks/useAvailableColumns'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { X, Plus } from 'lucide-react'
 import type { OrderByItem } from '@/types/query'
 
 export function OrderByPanel() {
-  const tables = useQueryStore((s) => s.queryState.tables)
-  const orderBy = useQueryStore((s) => s.queryState.orderBy)
+  const orderBy    = useQueryStore((s) => s.queryState.orderBy)
   const setOrderBy = useQueryStore((s) => s.setOrderBy)
-
-  const allColumns = tables.flatMap((t) =>
-    t.columns.map((c) => ({ tableAlias: t.alias, columnName: c.name }))
-  )
+  const allColumns = useAvailableColumns()
 
   const add = () => {
     if (allColumns.length === 0) return
     const first = allColumns[0]
-    setOrderBy([...orderBy, { ...first, direction: 'ASC' }])
+    setOrderBy([...orderBy, { tableAlias: first.tableAlias, columnName: first.columnName, direction: 'ASC' }])
   }
 
   const update = (idx: number, updates: Partial<OrderByItem>) => {
@@ -35,7 +32,9 @@ export function OrderByPanel() {
           <Select
             value={`${item.tableAlias}.${item.columnName}`}
             onValueChange={(v) => {
-              const [tableAlias, columnName] = v.split('.')
+              const dotIdx = v.indexOf('.')
+              const tableAlias  = v.slice(0, dotIdx)
+              const columnName = v.slice(dotIdx + 1)
               update(i, { tableAlias, columnName })
             }}
           >
@@ -46,6 +45,9 @@ export function OrderByPanel() {
               {allColumns.map((c, ci) => (
                 <SelectItem key={ci} value={`${c.tableAlias}.${c.columnName}`} className="text-xs">
                   {c.tableAlias}.{c.columnName}
+                  {c.isExpansion && (
+                    <span className="ml-1 text-[9px] text-blue-500">(expanded)</span>
+                  )}
                 </SelectItem>
               ))}
             </SelectContent>

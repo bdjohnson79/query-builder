@@ -5,6 +5,8 @@ export type { JsonbMapping }
 
 export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL OUTER' | 'CROSS'
 
+export type GrafanaPanelType = 'time-series' | 'stat' | 'bar-chart' | 'table' | 'heatmap'
+
 export interface ColumnRef {
   tableAlias: string
   columnName: string
@@ -42,7 +44,16 @@ export interface SelectedColumn {
   tableAlias: string
   columnName: string
   alias?: string
-  expression?: string  // for computed columns
+  expression?: string  // for computed columns (custom expressions, CASE WHEN, etc.)
+  aggregate?: string   // 'COUNT' | 'SUM' | 'AVG' | 'MIN' | 'MAX' | 'COUNT DISTINCT'
+}
+
+export interface JsonbExpansion {
+  id: string
+  tableAlias: string    // table alias that has the JSONB column (e.g. 'ae')
+  columnName: string    // the JSONB column name (e.g. 'info')
+  expandAlias: string   // alias for the expanded record (e.g. 'i')
+  fields: { name: string; pgType: string }[]  // all fields in the CROSS JOIN definition
 }
 
 export interface OrderByItem {
@@ -86,6 +97,7 @@ export interface CTEDef {
 export interface QueryState {
   tables: TableInstance[]
   joins: JoinDef[]
+  jsonbExpansions: JsonbExpansion[]
   selectedColumns: SelectedColumn[]
   windowFunctions: WindowFunctionDef[]
   distinct: boolean
@@ -98,6 +110,8 @@ export interface QueryState {
   ctes: CTEDef[]
   isSubquery: boolean
   jsonbMappings: JsonbMapping[]
+  grafanaPanelType?: GrafanaPanelType
+  isGrafanaVariable?: boolean
 }
 
 export function emptyFilterGroup(): FilterGroup {
@@ -108,6 +122,7 @@ export function emptyQueryState(): QueryState {
   return {
     tables: [],
     joins: [],
+    jsonbExpansions: [],
     selectedColumns: [],
     windowFunctions: [],
     distinct: false,
@@ -120,5 +135,7 @@ export function emptyQueryState(): QueryState {
     ctes: [],
     isSubquery: false,
     jsonbMappings: [],
+    grafanaPanelType: undefined,
+    isGrafanaVariable: false,
   }
 }

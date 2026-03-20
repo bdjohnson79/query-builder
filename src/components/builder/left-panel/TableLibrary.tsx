@@ -7,6 +7,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import { Search, Database } from 'lucide-react'
 import type { AppSchema, AppTable, AppColumn } from '@/types/schema'
+import { WorkflowStepIndicator } from './WorkflowStepIndicator'
 
 export function TableLibrary() {
   const setSchemas = useSchemaStore((s) => s.setSchemas)
@@ -54,6 +55,8 @@ export function TableLibrary() {
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
+
+      <WorkflowStepIndicator />
 
       <ScrollArea className="flex-1">
         <div className="space-y-3 pr-2">

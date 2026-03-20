@@ -1,9 +1,11 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { DndContext, type DragEndEvent } from '@dnd-kit/core'
+import { DndContext } from '@dnd-kit/core'
 import { TableLibrary } from './left-panel/TableLibrary'
 import { QueryCanvas } from './canvas/QueryCanvas'
 import { RightPanel } from './right-panel/RightPanel'
+import { OnboardingOverlay, ONBOARDING_STORAGE_KEY } from './OnboardingOverlay'
+import { TemplateLibrary } from './TemplateLibrary'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -17,17 +19,26 @@ import { Label } from '@/components/ui/label'
 import { useQueryStore } from '@/store/queryStore'
 import { useJsonStructureStore } from '@/store/jsonStructureStore'
 import { api } from '@/lib/api/client'
-import { Save, FolderOpen, RotateCcw, Database, Copy } from 'lucide-react'
+import { Save, FolderOpen, RotateCcw, Database, Copy, HelpCircle, LayoutTemplate } from 'lucide-react'
 import type { QueryResponse } from '@/types/api'
 
 export function BuilderLayout() {
   const queryState = useQueryStore((s) => s.queryState)
   const generatedSql = useQueryStore((s) => s.generatedSql)
+  const userEditedSql = useQueryStore((s) => s.userEditedSql)
   const loadQueryState = useQueryStore((s) => s.loadQueryState)
   const resetQuery = useQueryStore((s) => s.resetQuery)
 
   const loadStructures = useJsonStructureStore((s) => s.loadStructures)
   useEffect(() => { loadStructures() }, [loadStructures])
+
+  const [templatesOpen, setTemplatesOpen] = useState(false)
+  const [onboardingOpen, setOnboardingOpen] = useState(false)
+  useEffect(() => {
+    if (!localStorage.getItem(ONBOARDING_STORAGE_KEY)) {
+      setOnboardingOpen(true)
+    }
+  }, [])
 
   const [saveDialogOpen, setSaveDialogOpen] = useState(false)
   const [loadDialogOpen, setLoadDialogOpen] = useState(false)
@@ -66,7 +77,7 @@ export function BuilderLayout() {
   }
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(generatedSql)
+    await navigator.clipboard.writeText(userEditedSql ?? generatedSql)
   }
 
   return (
@@ -93,9 +104,21 @@ export function BuilderLayout() {
             <Copy className="mr-1 h-3.5 w-3.5" />
             Copy SQL
           </Button>
+          <Button variant="ghost" size="sm" onClick={() => setTemplatesOpen(true)}>
+            <LayoutTemplate className="mr-1 h-3.5 w-3.5" />
+            Templates
+          </Button>
           <Button variant="ghost" size="sm" onClick={resetQuery}>
             <RotateCcw className="mr-1 h-3.5 w-3.5" />
             Reset
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setOnboardingOpen(true)}
+            title="Take the tour"
+          >
+            <HelpCircle className="h-3.5 w-3.5" />
           </Button>
         </div>
       </nav>
@@ -110,7 +133,7 @@ export function BuilderLayout() {
 
           {/* Canvas */}
           <div className="relative flex-1 overflow-hidden">
-            <QueryCanvas />
+            <QueryCanvas onStartTour={() => setOnboardingOpen(true)} />
           </div>
 
           {/* Right Panel */}
@@ -119,6 +142,15 @@ export function BuilderLayout() {
           </div>
         </div>
       </DndContext>
+
+      <OnboardingOverlay
+        open={onboardingOpen}
+        onClose={() => setOnboardingOpen(false)}
+      />
+      <TemplateLibrary
+        open={templatesOpen}
+        onClose={() => setTemplatesOpen(false)}
+      />
 
       {/* Save Dialog */}
       <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>

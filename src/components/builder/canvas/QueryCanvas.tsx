@@ -19,6 +19,7 @@ import { JoinEdge } from './JoinEdge'
 import type { TableInstance, JoinDef } from '@/types/query'
 import type { AppTable, AppColumn, AppSchema } from '@/types/schema'
 import { cn } from '@/lib/utils'
+import { CanvasEmptyState } from './CanvasEmptyState'
 
 const nodeTypes = { tableNode: TableNode }
 const edgeTypes = { joinEdge: JoinEdge }
@@ -46,7 +47,11 @@ function joinToEdge(join: JoinDef, tables: TableInstance[]): Edge {
   }
 }
 
-export function QueryCanvas() {
+interface QueryCanvasProps {
+  onStartTour: () => void
+}
+
+export function QueryCanvas({ onStartTour }: QueryCanvasProps) {
   const queryState = useQueryStore((s) => s.queryState)
   const addTable = useQueryStore((s) => s.addTable)
   const updateTablePosition = useQueryStore((s) => s.updateTablePosition)
@@ -158,14 +163,7 @@ export function QueryCanvas() {
         <MiniMap nodeStrokeWidth={3} zoomable pannable />
       </ReactFlow>
       {queryState.tables.length === 0 && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="rounded-xl border-2 border-dashed border-muted-foreground/30 px-8 py-12 text-center">
-            <p className="text-lg font-medium text-muted-foreground">Drag tables here</p>
-            <p className="text-sm text-muted-foreground/70">
-              From the left panel to start building your query
-            </p>
-          </div>
-        </div>
+        <CanvasEmptyState onStartTour={onStartTour} />
       )}
     </div>
   )

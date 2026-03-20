@@ -7,6 +7,7 @@ import {
   type QueryState,
   type TableInstance,
   type JoinDef,
+  type JsonbExpansion,
   type SelectedColumn,
   type OrderByItem,
   type ColumnRef,
@@ -15,11 +16,13 @@ import {
   type WindowFunctionDef,
   type CTEDef,
   type JsonbMapping,
+  type GrafanaPanelType,
 } from '@/types/query'
 
 interface QueryStore {
   queryState: QueryState
   generatedSql: string
+  userEditedSql: string | null
 
   // Table actions
   addTable: (table: TableInstance) => void
@@ -36,6 +39,7 @@ interface QueryStore {
   toggleColumn: (col: SelectedColumn) => void
   updateColumn: (id: string, updates: Partial<SelectedColumn>) => void
   reorderColumns: (columns: SelectedColumn[]) => void
+  addColumn: (col: SelectedColumn) => void
 
   // Clauses
   setDistinct: (val: boolean) => void
@@ -56,9 +60,20 @@ interface QueryStore {
   updateCte: (id: string, updates: Partial<CTEDef>) => void
   removeCte: (id: string) => void
 
-  // JSONB mappings
+  // JSONB mappings (structure assignments)
   setJsonbMapping: (tableAlias: string, columnName: string, structureId: number) => void
   clearJsonbMapping: (tableAlias: string, columnName: string) => void
+
+  // JSONB expand-as-record expansions
+  applyJsonbExpansion: (exp: JsonbExpansion, selectedFieldNames: string[]) => void
+  removeJsonbExpansion: (id: string) => void
+
+  // Grafana intent
+  setPanelType: (type: GrafanaPanelType | undefined) => void
+  setIsGrafanaVariable: (enabled: boolean) => void
+
+  // Manual SQL editing
+  setUserEditedSql: (sql: string | null) => void
 
   // State management
   loadQueryState: (state: QueryState) => void
@@ -74,6 +89,7 @@ export const useQueryStore = create<QueryStore>()(
   subscribeWithSelector((set, get) => ({
     queryState: emptyQueryState(),
     generatedSql: '-- Drag a table onto the canvas to start',
+    userEditedSql: null,
 
     addTable: (table) =>
       set((s) => {
@@ -84,6 +100,12 @@ export const useQueryStore = create<QueryStore>()(
     removeTable: (instanceId) =>
       set((s) => {
         const alias = s.queryState.tables.find(t => t.id === instanceId)?.alias
+        // Find expansion aliases that belong to this table so we can clean up their selectedColumns
+        const expansionAliases = alias
+          ? s.queryState.jsonbExpansions
+              .filter((e) => e.tableAlias === alias)
+              .map((e) => e.expandAlias)
+          : []
         const next: QueryState = {
           ...s.queryState,
           tables: s.queryState.tables.filter((t) => t.id !== instanceId),
@@ -91,7 +113,10 @@ export const useQueryStore = create<QueryStore>()(
             (j) => j.leftTableAlias !== alias && j.rightTableAlias !== alias
           ),
           selectedColumns: s.queryState.selectedColumns.filter(
-            (c) => c.tableAlias !== alias
+            (c) => c.tableAlias !== alias && !expansionAliases.includes(c.tableAlias)
+          ),
+          jsonbExpansions: s.queryState.jsonbExpansions.filter(
+            (e) => e.tableAlias !== alias
           ),
           jsonbMappings: s.queryState.jsonbMappings.filter(
             (m) => m.tableAlias !== alias
@@ -159,6 +184,9 @@ export const useQueryStore = create<QueryStore>()(
           jsonbMappings: s.queryState.jsonbMappings.map((m) =>
             m.tableAlias === old ? { ...m, tableAlias: newAlias } : m
           ),
+          jsonbExpansions: s.queryState.jsonbExpansions.map((e) =>
+            e.tableAlias === old ? { ...e, tableAlias: newAlias } : e
+          ),
         }
         return { queryState: next, generatedSql: rebuildSql(next) }
       }),
@@ -212,6 +240,15 @@ export const useQueryStore = create<QueryStore>()(
     reorderColumns: (columns) =>
       set((s) => {
         const next = { ...s.queryState, selectedColumns: columns }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
+    addColumn: (col) =>
+      set((s) => {
+        const next = {
+          ...s.queryState,
+          selectedColumns: [...s.queryState.selectedColumns, col],
+        }
         return { queryState: next, generatedSql: rebuildSql(next) }
       }),
 
@@ -327,19 +364,98 @@ export const useQueryStore = create<QueryStore>()(
         return { queryState: next, generatedSql: rebuildSql(next) }
       }),
 
+    applyJsonbExpansion: (exp, selectedFieldNames) =>
+      set((s) => {
+        // Find existing expansion for this table.column to get old expandAlias
+        const existing = s.queryState.jsonbExpansions.find(
+          (e) => e.tableAlias === exp.tableAlias && e.columnName === exp.columnName
+        )
+        const oldExpandAlias = existing?.expandAlias
+
+        // Remove old expansion entry
+        const expansions = s.queryState.jsonbExpansions.filter(
+          (e) => !(e.tableAlias === exp.tableAlias && e.columnName === exp.columnName)
+        )
+
+        // Remove SelectedColumns that came from the old expansion alias
+        let selectedColumns = s.queryState.selectedColumns
+        if (oldExpandAlias) {
+          selectedColumns = selectedColumns.filter((c) => c.tableAlias !== oldExpandAlias)
+        }
+        // Also clean up new expandAlias if it differs (alias rename case)
+        if (exp.expandAlias !== oldExpandAlias) {
+          selectedColumns = selectedColumns.filter((c) => c.tableAlias !== exp.expandAlias)
+        }
+
+        // Add SelectedColumns for each checked field
+        const newCols: SelectedColumn[] = selectedFieldNames
+          .filter((name) => exp.fields.some((f) => f.name === name))
+          .map((name) => ({
+            id: crypto.randomUUID(),
+            tableAlias: exp.expandAlias,
+            columnName: name,
+          }))
+        selectedColumns = [...selectedColumns, ...newCols]
+
+        const next: QueryState = {
+          ...s.queryState,
+          jsonbExpansions: [...expansions, exp],
+          selectedColumns,
+        }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
+    removeJsonbExpansion: (id) =>
+      set((s) => {
+        const exp = s.queryState.jsonbExpansions.find((e) => e.id === id)
+        const next: QueryState = {
+          ...s.queryState,
+          jsonbExpansions: s.queryState.jsonbExpansions.filter((e) => e.id !== id),
+          // Remove selected columns that came from this expansion
+          selectedColumns: exp
+            ? s.queryState.selectedColumns.filter((c) => c.tableAlias !== exp.expandAlias)
+            : s.queryState.selectedColumns,
+        }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
+    setPanelType: (type) =>
+      set((s) => {
+        const next = { ...s.queryState, grafanaPanelType: type }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
+    setIsGrafanaVariable: (enabled) =>
+      set((s) => {
+        const next = { ...s.queryState, isGrafanaVariable: enabled }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
+    setUserEditedSql: (sql) =>
+      set({ userEditedSql: sql }),
+
     loadQueryState: (state) =>
-      set({ queryState: state, generatedSql: rebuildSql(state) }),
+      set({ queryState: state, generatedSql: rebuildSql(state), userEditedSql: null }),
 
     resetQuery: () =>
-      set({ queryState: emptyQueryState(), generatedSql: '-- Drag a table onto the canvas to start' }),
+      set({
+        queryState: emptyQueryState(),
+        generatedSql: '-- Drag a table onto the canvas to start',
+        userEditedSql: null,
+      }),
   })),
   {
     name: 'query-builder-state',
-    partialize: (state) => ({ queryState: state.queryState }),
+    partialize: (state) => ({
+      queryState: state.queryState,
+      userEditedSql: state.userEditedSql,
+    }),
     onRehydrateStorage: () => (state) => {
       if (state?.queryState) {
         // Backfill fields added after initial release so old persisted states don't crash
         if (!state.queryState.jsonbMappings) state.queryState.jsonbMappings = []
+        if (!state.queryState.jsonbExpansions) state.queryState.jsonbExpansions = []
+        if (state.queryState.isGrafanaVariable === undefined) state.queryState.isGrafanaVariable = false
         state.generatedSql = buildSql(state.queryState)
       }
     },

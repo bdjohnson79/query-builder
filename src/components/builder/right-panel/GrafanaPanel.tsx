@@ -4,7 +4,10 @@ import { useQueryStore } from '@/store/queryStore'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Copy, Check, Plus } from 'lucide-react'
+import { Copy, Check, Plus, AlertTriangle } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { validatePanelType, findFirstTimestampColumn } from '@/lib/templates/panel-validation'
+import type { GrafanaPanelType } from '@/types/query'
 
 // ---------------------------------------------------------------------------
 // Macro reference list
@@ -118,7 +121,6 @@ function TimeGroupBuilder() {
   const addToGroupBy = () => {
     if (!column) return
     const expr = `$__timeGroup(${column}, '${interval}')`
-    // Store as a raw expression using a sentinel tableAlias
     const already = groupBy.some((g) => g.tableAlias === '__grafana__' && g.columnName === expr)
     if (!already) setGroupBy([...groupBy, { tableAlias: '__grafana__', columnName: expr }])
   }
@@ -183,6 +185,162 @@ function TimeGroupBuilder() {
 }
 
 // ---------------------------------------------------------------------------
+// Manual edit notice
+// ---------------------------------------------------------------------------
+
+function ManualEditNotice() {
+  const userEditedSql    = useQueryStore((s) => s.userEditedSql)
+  const setUserEditedSql = useQueryStore((s) => s.setUserEditedSql)
+  if (!userEditedSql) return null
+  return (
+    <div className="flex items-start gap-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+      <span className="flex-1">
+        SQL has been manually edited. The macro helpers below apply to the auto-generated version.
+      </span>
+      <button
+        onClick={() => setUserEditedSql(null)}
+        className="shrink-0 underline hover:text-amber-900 whitespace-nowrap"
+      >
+        Revert
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Panel type intent
+// ---------------------------------------------------------------------------
+
+const PANEL_TYPES: { value: GrafanaPanelType; label: string }[] = [
+  { value: 'time-series', label: 'Time Series' },
+  { value: 'stat',        label: 'Stat' },
+  { value: 'bar-chart',   label: 'Bar Chart' },
+  { value: 'table',       label: 'Table' },
+  { value: 'heatmap',     label: 'Heatmap' },
+]
+
+function PanelTypeIntent() {
+  const panelType    = useQueryStore((s) => s.queryState.grafanaPanelType)
+  const isVariable   = useQueryStore((s) => s.queryState.isGrafanaVariable)
+  const setPanelType = useQueryStore((s) => s.setPanelType)
+  const queryState   = useQueryStore((s) => s.queryState)
+  const setOrderBy   = useQueryStore((s) => s.setOrderBy)
+  const orderBy      = useQueryStore((s) => s.queryState.orderBy)
+
+  if (isVariable) return null
+
+  const warnings = panelType ? validatePanelType(panelType, queryState) : []
+  const hasOrderByWarning = warnings.some((w) => w.includes('ORDER BY'))
+
+  const fixOrderBy = () => {
+    const col = findFirstTimestampColumn(queryState)
+    if (!col) return
+    const already = orderBy.some(
+      (o) => o.tableAlias === col.tableAlias && o.columnName === col.columnName
+    )
+    if (!already) {
+      setOrderBy([...orderBy, { tableAlias: col.tableAlias, columnName: col.columnName, direction: 'ASC' }])
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <p className="text-xs font-semibold">What are you building?</p>
+        <p className="text-[11px] text-muted-foreground">Select a panel type for validation hints.</p>
+      </div>
+      <div className="flex flex-wrap gap-1">
+        {PANEL_TYPES.map(({ value, label }) => (
+          <button
+            key={value}
+            onClick={() => setPanelType(panelType === value ? undefined : value)}
+            className={cn(
+              'rounded-full px-2.5 py-0.5 text-xs font-medium border transition-colors',
+              panelType === value
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-background text-muted-foreground border-border hover:border-blue-400 hover:text-foreground'
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {warnings.length > 0 && (
+        <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 space-y-1.5">
+          <div className="flex items-center gap-1 text-[11px] font-medium text-amber-700">
+            <AlertTriangle className="h-3 w-3" />
+            {warnings.length} warning{warnings.length > 1 ? 's' : ''}
+          </div>
+          <ul className="space-y-0.5">
+            {warnings.map((w, i) => (
+              <li key={i} className="text-[11px] text-amber-700 leading-relaxed">• {w}</li>
+            ))}
+          </ul>
+          {hasOrderByWarning && (
+            <button
+              onClick={fixOrderBy}
+              className="text-[11px] text-amber-700 underline hover:text-amber-900"
+            >
+              Fix: add first timestamp column to ORDER BY
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Variable mode toggle
+// ---------------------------------------------------------------------------
+
+function VariableModeToggle() {
+  const isVariable           = useQueryStore((s) => s.queryState.isGrafanaVariable)
+  const setIsGrafanaVariable = useQueryStore((s) => s.setIsGrafanaVariable)
+  const selectedColumns      = useQueryStore((s) => s.queryState.selectedColumns)
+
+  const hasValueCol = selectedColumns.some(
+    (c) => c.alias === '__value' || c.columnName === '__value'
+  )
+  const hasTextCol = selectedColumns.some(
+    (c) => c.alias === '__text' || c.columnName === '__text'
+  )
+
+  return (
+    <div className="space-y-2">
+      <label className="flex items-center gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={!!isVariable}
+          onChange={(e) => setIsGrafanaVariable(e.target.checked)}
+        />
+        <span className="text-xs font-medium">This query populates a Grafana dashboard variable</span>
+      </label>
+      {isVariable && (
+        <div className="rounded border border-blue-200 bg-blue-50 px-3 py-2 space-y-1">
+          <p className="text-[11px] text-blue-700 font-medium">Variable query convention</p>
+          <p className="text-[11px] text-blue-600 leading-relaxed">
+            Alias your ID column as <code className="font-mono">__value</code> and your display
+            column as <code className="font-mono">__text</code>. Grafana uses these to populate
+            the variable selector.
+          </p>
+          {(!hasValueCol || !hasTextCol) && (
+            <p className="text-[11px] text-amber-600 mt-1">
+              {!hasValueCol && (
+                <span>• Missing <code className="font-mono">__value</code> alias in SELECT.<br /></span>
+              )}
+              {!hasTextCol && (
+                <span>• Missing <code className="font-mono">__text</code> alias in SELECT.</span>
+              )}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
 
@@ -190,9 +348,18 @@ export function GrafanaPanel() {
   return (
     <ScrollArea className="h-full">
       <div className="space-y-5 p-3">
+        <ManualEditNotice />
+
+        {/* Panel intent */}
+        <PanelTypeIntent />
+
+        {/* Variable mode */}
+        <div className="border-t pt-4">
+          <VariableModeToggle />
+        </div>
 
         {/* timeGroup builder */}
-        <div className="space-y-2">
+        <div className="border-t pt-4 space-y-2">
           <div>
             <p className="text-xs font-semibold">$__timeGroup Builder</p>
             <p className="text-[11px] text-muted-foreground">
