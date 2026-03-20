@@ -28,8 +28,13 @@ export function buildSql(state: QueryState): string {
  */
 function formatWithMacros(sql: string): string {
   const macros: string[] = []
-  // Match $__word(...) or $__word() — greedy-enough for all known Grafana macros
-  const masked = sql.replace(/\$__\w+\([^)]*\)/g, (match) => {
+  // Pass 1: mask $__word(...) Grafana macros (with parentheses)
+  let masked = sql.replace(/\$__\w+\([^)]*\)/g, (match) => {
+    const idx = macros.push(match) - 1
+    return `__GRAFANA_MACRO_${idx}__`
+  })
+  // Pass 2: mask any remaining bare $variable names (dashboard vars like $area, $machine, $__interval)
+  masked = masked.replace(/\$[a-zA-Z_][a-zA-Z0-9_]*/g, (match) => {
     const idx = macros.push(match) - 1
     return `__GRAFANA_MACRO_${idx}__`
   })
@@ -319,7 +324,9 @@ function quoteValue(val: unknown): string {
   if (typeof val === 'number') return String(val)
   if (typeof val === 'boolean') return val ? 'TRUE' : 'FALSE'
   const s = String(val)
-  // Attempt to detect numeric strings
+  // Grafana dashboard variable — emit unquoted so Grafana can substitute at render time
+  if (/^\$[a-zA-Z_][a-zA-Z0-9_]*$/.test(s)) return s
+  // Numeric strings
   if (/^-?\d+(\.\d+)?$/.test(s)) return s
   return `'${s.replace(/'/g, "''")}'`
 }

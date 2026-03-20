@@ -71,6 +71,7 @@ interface QueryStore {
   // Grafana intent
   setPanelType: (type: GrafanaPanelType | undefined) => void
   setIsGrafanaVariable: (enabled: boolean) => void
+  setTimeColumn: (col: { tableAlias: string; columnName: string } | undefined) => void
 
   // Manual SQL editing
   setUserEditedSql: (sql: string | null) => void
@@ -431,6 +432,12 @@ export const useQueryStore = create<QueryStore>()(
         return { queryState: next, generatedSql: rebuildSql(next) }
       }),
 
+    setTimeColumn: (col) =>
+      set((s) => {
+        const next = { ...s.queryState, timeColumn: col }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
     setUserEditedSql: (sql) =>
       set({ userEditedSql: sql }),
 
@@ -456,6 +463,12 @@ export const useQueryStore = create<QueryStore>()(
         if (!state.queryState.jsonbMappings) state.queryState.jsonbMappings = []
         if (!state.queryState.jsonbExpansions) state.queryState.jsonbExpansions = []
         if (state.queryState.isGrafanaVariable === undefined) state.queryState.isGrafanaVariable = false
+        // timeColumn backfill: null → undefined (JSON serializes undefined as absent, null may appear)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if ((state.queryState as any).timeColumn === null) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          delete (state.queryState as any).timeColumn
+        }
         state.generatedSql = buildSql(state.queryState)
       }
     },

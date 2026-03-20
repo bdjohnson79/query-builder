@@ -112,6 +112,7 @@ export interface QueryState {
   jsonbMappings: JsonbMapping[]
   grafanaPanelType?: GrafanaPanelType
   isGrafanaVariable?: boolean
+  timeColumn?: { tableAlias: string; columnName: string }
 }
 
 export function emptyFilterGroup(): FilterGroup {
@@ -137,5 +138,6 @@ export function emptyQueryState(): QueryState {
     jsonbMappings: [],
     grafanaPanelType: undefined,
     isGrafanaVariable: false,
+    timeColumn: undefined,
   }
 }
