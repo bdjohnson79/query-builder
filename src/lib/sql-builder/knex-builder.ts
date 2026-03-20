@@ -121,6 +121,26 @@ function buildRawSql(state: QueryState): string {
     )
   }
 
+  // JSONB array unnesting LATERAL JOINs
+  const jsonbArrayUnnestings = state.jsonbArrayUnnestings ?? []
+  for (const u of jsonbArrayUnnestings) {
+    const base = `${qi(u.tableAlias)}.${qi(u.columnName)}`
+    const segments = u.arrayPath.split('.')
+    const pathExpr = segments.length === 1
+      ? `${base}->'${segments[0]}'`
+      : `${base}#>'{${segments.join(',')}}'`
+
+    if (u.mode === 'elements') {
+      parts.push(`CROSS JOIN LATERAL jsonb_array_elements(${pathExpr}) AS ${qi(u.unnestAlias)}`)
+    } else {
+      if (u.recordsetFields.length === 0) continue
+      const fieldList = u.recordsetFields.map((f) => `${qi(f.name)} ${f.pgType}`).join(', ')
+      parts.push(
+        `CROSS JOIN LATERAL jsonb_to_recordset(${pathExpr}) AS ${qi(u.unnestAlias)}(${fieldList})`
+      )
+    }
+  }
+
   // JOINs
   for (const join of joins) {
     const rightTable = tables.find(t => t.alias === join.rightTableAlias)

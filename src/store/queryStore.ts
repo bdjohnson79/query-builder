@@ -8,6 +8,7 @@ import {
   type TableInstance,
   type JoinDef,
   type JsonbExpansion,
+  type JsonbArrayUnnesting,
   type SelectedColumn,
   type OrderByItem,
   type ColumnRef,
@@ -68,6 +69,11 @@ interface QueryStore {
   applyJsonbExpansion: (exp: JsonbExpansion, selectedFieldNames: string[]) => void
   removeJsonbExpansion: (id: string) => void
 
+  // JSONB array unnestings
+  addJsonbArrayUnnesting: (unnesting: JsonbArrayUnnesting) => void
+  updateJsonbArrayUnnesting: (id: string, updates: Partial<JsonbArrayUnnesting>) => void
+  removeJsonbArrayUnnesting: (id: string) => void
+
   // Grafana intent
   setPanelType: (type: GrafanaPanelType | undefined) => void
   setIsGrafanaVariable: (enabled: boolean) => void
@@ -118,6 +124,9 @@ export const useQueryStore = create<QueryStore>()(
           ),
           jsonbExpansions: s.queryState.jsonbExpansions.filter(
             (e) => e.tableAlias !== alias
+          ),
+          jsonbArrayUnnestings: (s.queryState.jsonbArrayUnnestings ?? []).filter(
+            (u) => u.tableAlias !== alias
           ),
           jsonbMappings: s.queryState.jsonbMappings.filter(
             (m) => m.tableAlias !== alias
@@ -187,6 +196,9 @@ export const useQueryStore = create<QueryStore>()(
           ),
           jsonbExpansions: s.queryState.jsonbExpansions.map((e) =>
             e.tableAlias === old ? { ...e, tableAlias: newAlias } : e
+          ),
+          jsonbArrayUnnestings: (s.queryState.jsonbArrayUnnestings ?? []).map((u) =>
+            u.tableAlias === old ? { ...u, tableAlias: newAlias } : u
           ),
         }
         return { queryState: next, generatedSql: rebuildSql(next) }
@@ -420,6 +432,37 @@ export const useQueryStore = create<QueryStore>()(
         return { queryState: next, generatedSql: rebuildSql(next) }
       }),
 
+    addJsonbArrayUnnesting: (unnesting) =>
+      set((s) => {
+        const next: QueryState = {
+          ...s.queryState,
+          jsonbArrayUnnestings: [...(s.queryState.jsonbArrayUnnestings ?? []), unnesting],
+        }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
+    updateJsonbArrayUnnesting: (id, updates) =>
+      set((s) => {
+        const next: QueryState = {
+          ...s.queryState,
+          jsonbArrayUnnestings: (s.queryState.jsonbArrayUnnestings ?? []).map((u) =>
+            u.id === id ? { ...u, ...updates } : u
+          ),
+        }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
+    removeJsonbArrayUnnesting: (id) =>
+      set((s) => {
+        const next: QueryState = {
+          ...s.queryState,
+          jsonbArrayUnnestings: (s.queryState.jsonbArrayUnnestings ?? []).filter(
+            (u) => u.id !== id
+          ),
+        }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
     setPanelType: (type) =>
       set((s) => {
         const next = { ...s.queryState, grafanaPanelType: type }
@@ -462,6 +505,7 @@ export const useQueryStore = create<QueryStore>()(
         // Backfill fields added after initial release so old persisted states don't crash
         if (!state.queryState.jsonbMappings) state.queryState.jsonbMappings = []
         if (!state.queryState.jsonbExpansions) state.queryState.jsonbExpansions = []
+        if (!state.queryState.jsonbArrayUnnestings) state.queryState.jsonbArrayUnnestings = []
         if (state.queryState.isGrafanaVariable === undefined) state.queryState.isGrafanaVariable = false
         // timeColumn backfill: null → undefined (JSON serializes undefined as absent, null may appear)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

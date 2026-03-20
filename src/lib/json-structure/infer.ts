@@ -127,3 +127,18 @@ export function buildJsonbPathExpr(
 function needsQuoting(name: string): boolean {
   return !/^[a-z_][a-z0-9_]*$/.test(name)
 }
+
+/**
+ * Suggest a SQL alias from a dot-path string.
+ * Strips a leading 'data.' prefix (common in form_event/form_data structures),
+ * then replaces dots and non-identifier characters with underscores.
+ *
+ * Examples:
+ *   'sku.label'          → 'sku_label'
+ *   'data.category.value' → 'category_value'
+ *   'shift'              → 'shift'
+ */
+export function suggestAlias(dotPath: string): string {
+  const cleaned = dotPath.replace(/^data\./, '')
+  return cleaned.replace(/\./g, '_').replace(/[^a-z0-9_]/gi, '_').toLowerCase()
+}

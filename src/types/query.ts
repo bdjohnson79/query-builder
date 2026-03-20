@@ -56,6 +56,16 @@ export interface JsonbExpansion {
   fields: { name: string; pgType: string }[]  // all fields in the CROSS JOIN definition
 }
 
+export interface JsonbArrayUnnesting {
+  id: string
+  tableAlias: string        // table alias with the JSONB column (e.g. 'ae')
+  columnName: string        // JSONB column name (e.g. 'info')
+  arrayPath: string         // dot-path to the array field (e.g. 'faults' or 'data.items')
+  unnestAlias: string       // alias for the lateral result set (e.g. 'f')
+  mode: 'elements' | 'recordset'
+  recordsetFields: { name: string; pgType: string }[]  // used when mode === 'recordset'
+}
+
 export interface OrderByItem {
   tableAlias: string
   columnName: string
@@ -98,6 +108,7 @@ export interface QueryState {
   tables: TableInstance[]
   joins: JoinDef[]
   jsonbExpansions: JsonbExpansion[]
+  jsonbArrayUnnestings: JsonbArrayUnnesting[]
   selectedColumns: SelectedColumn[]
   windowFunctions: WindowFunctionDef[]
   distinct: boolean
@@ -124,6 +135,7 @@ export function emptyQueryState(): QueryState {
     tables: [],
     joins: [],
     jsonbExpansions: [],
+    jsonbArrayUnnestings: [],
     selectedColumns: [],
     windowFunctions: [],
     distinct: false,

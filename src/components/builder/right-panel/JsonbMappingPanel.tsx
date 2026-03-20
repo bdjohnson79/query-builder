@@ -5,10 +5,16 @@ import { useJsonStructureStore } from '@/store/jsonStructureStore'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
-import { X } from 'lucide-react'
+import { ChevronDown, ChevronUp, X, Zap } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { JsonField } from '@/types/json-structure'
-import type { JsonbExpansion } from '@/types/query'
+import type { JsonbExpansion, JsonbArrayUnnesting } from '@/types/query'
+import {
+  inferJsonStructure,
+  flattenToPathOptions,
+  suggestAlias,
+} from '@/lib/json-structure/infer'
+import { ST_ONE_AGG_INFO_IDS } from '@/lib/jsonb-presets/st-one-presets'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,7 +40,7 @@ function defaultExpandAlias(columnName: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Expand-as-record panel for a single JSONB column
+// Expand-as-record panel
 // ---------------------------------------------------------------------------
 
 function ExpandAsRecordPanel({
@@ -46,10 +52,10 @@ function ExpandAsRecordPanel({
   columnName: string
   structureFields: JsonField[]
 }) {
-  const jsonbExpansions       = useQueryStore((s) => s.queryState.jsonbExpansions)
-  const applyJsonbExpansion   = useQueryStore((s) => s.applyJsonbExpansion)
-  const removeJsonbExpansion  = useQueryStore((s) => s.removeJsonbExpansion)
-  const selectedColumns       = useQueryStore((s) => s.queryState.selectedColumns)
+  const jsonbExpansions      = useQueryStore((s) => s.queryState.jsonbExpansions)
+  const applyJsonbExpansion  = useQueryStore((s) => s.applyJsonbExpansion)
+  const removeJsonbExpansion = useQueryStore((s) => s.removeJsonbExpansion)
+  const selectedColumns      = useQueryStore((s) => s.queryState.selectedColumns)
 
   const existing = jsonbExpansions.find(
     (e) => e.tableAlias === tableAlias && e.columnName === columnName
@@ -59,7 +65,6 @@ function ExpandAsRecordPanel({
   const [expandAlias, setExpandAlias] = useState(
     existing?.expandAlias ?? defaultExpandAlias(columnName)
   )
-  // Which fields are checked — defaults to whatever existing expansion selected
   const [checkedFields, setCheckedFields] = useState<Set<string>>(() => {
     if (!existing) return new Set()
     return new Set(
@@ -112,7 +117,6 @@ function ExpandAsRecordPanel({
         </div>
       )}
 
-      {/* Record alias */}
       <div className="flex items-center gap-2">
         <span className="text-[10px] text-muted-foreground shrink-0">Record alias:</span>
         <Input
@@ -123,7 +127,6 @@ function ExpandAsRecordPanel({
         />
       </div>
 
-      {/* Field list */}
       <div className="space-y-0.5 max-h-48 overflow-y-auto rounded border bg-muted/20 p-1.5">
         {allFields.map((f) => (
           <label
@@ -147,13 +150,319 @@ function ExpandAsRecordPanel({
       </div>
 
       <p className="text-[10px] text-muted-foreground">
-        Checked fields are added to SELECT as <code className="font-mono">{expandAlias || 'alias'}.field</code>.
+        Checked fields are added to SELECT as{' '}
+        <code className="font-mono">{expandAlias || 'alias'}.field</code>.
         The SQL will include <code className="font-mono">CROSS JOIN jsonb_to_record(...)</code>.
       </p>
 
       <Button size="sm" className="w-full h-7 text-xs" onClick={handleApply}>
         Apply
       </Button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Array unnesting section (shown in path extraction mode)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_PG_TYPES = ['text', 'numeric', 'float8', 'integer', 'boolean', 'jsonb', 'timestamptz']
+
+function ArrayUnnestSection({
+  tableAlias,
+  columnName,
+  arrayFields,
+}: {
+  tableAlias: string
+  columnName: string
+  arrayFields: JsonField[]
+}) {
+  const unnestings              = useQueryStore((s) => s.queryState.jsonbArrayUnnestings ?? [])
+  const addJsonbArrayUnnesting  = useQueryStore((s) => s.addJsonbArrayUnnesting)
+  const removeJsonbArrayUnnesting = useQueryStore((s) => s.removeJsonbArrayUnnesting)
+
+  // Which array field currently has the sub-form open
+  const [openFor, setOpenFor] = useState<string | null>(null)
+  const [unnestAlias, setUnnestAlias] = useState('')
+  const [mode, setMode] = useState<'elements' | 'recordset'>('elements')
+  const [recordsetFields, setRecordsetFields] = useState<{ name: string; pgType: string }[]>([])
+
+  if (arrayFields.length === 0) return null
+
+  const openSubForm = (field: JsonField) => {
+    setOpenFor(field.key)
+    setUnnestAlias(field.key.charAt(0))
+    setMode('elements')
+    // Pre-populate from itemSchema if available
+    const initialFields = (field.itemSchema ?? []).map((f) => ({
+      name: f.key,
+      pgType: f.pgCast ?? fieldToPgType(f),
+    }))
+    setRecordsetFields(initialFields)
+  }
+
+  const handleAdd = (arrayPath: string) => {
+    if (!unnestAlias.trim()) return
+    const u: JsonbArrayUnnesting = {
+      id: crypto.randomUUID(),
+      tableAlias,
+      columnName,
+      arrayPath,
+      unnestAlias: unnestAlias.trim(),
+      mode,
+      recordsetFields: mode === 'recordset' ? recordsetFields : [],
+    }
+    addJsonbArrayUnnesting(u)
+    setOpenFor(null)
+  }
+
+  const updateFieldPgType = (idx: number, pgType: string) => {
+    setRecordsetFields((prev) => prev.map((f, i) => i === idx ? { ...f, pgType } : f))
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[10px] font-medium text-muted-foreground">Array fields</p>
+
+      {/* Active unnesting badges */}
+      {unnestings
+        .filter((u) => u.tableAlias === tableAlias && u.columnName === columnName)
+        .map((u) => (
+          <div
+            key={u.id}
+            className="flex items-center gap-1.5 rounded bg-violet-50 border border-violet-200 px-2 py-1"
+          >
+            <span className="text-[10px] text-violet-700 flex-1">
+              <code className="font-mono">{u.arrayPath}</code>
+              {' '}→{' '}
+              <code className="font-mono">{u.unnestAlias}</code>
+              {' '}({u.mode})
+            </span>
+            <button
+              onClick={() => removeJsonbArrayUnnesting(u.id)}
+              className="text-violet-400 hover:text-destructive"
+              title="Remove unnesting"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        ))}
+
+      {/* Per-array-field unnest buttons */}
+      {arrayFields.map((field) => {
+        const alreadyUnnested = unnestings.some(
+          (u) =>
+            u.tableAlias === tableAlias &&
+            u.columnName === columnName &&
+            u.arrayPath === field.key
+        )
+
+        return (
+          <div key={field.key} className="space-y-1">
+            <div className="flex items-center gap-1.5">
+              <span className="flex-1 text-[10px] font-mono text-muted-foreground">{field.key}</span>
+              <span className="text-[9px] text-muted-foreground">array</span>
+              {!alreadyUnnested && (
+                <button
+                  onClick={() => openFor === field.key ? setOpenFor(null) : openSubForm(field)}
+                  className="text-[10px] text-violet-600 hover:text-violet-800 font-medium"
+                >
+                  {openFor === field.key ? 'Cancel' : 'Unnest'}
+                </button>
+              )}
+            </div>
+
+            {openFor === field.key && (
+              <div className="ml-2 space-y-2 rounded border border-violet-200 bg-violet-50/50 p-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-muted-foreground shrink-0">Alias:</span>
+                  <Input
+                    value={unnestAlias}
+                    onChange={(e) => setUnnestAlias(e.target.value)}
+                    className="h-6 text-xs font-mono w-20"
+                    placeholder="f"
+                  />
+                </div>
+
+                <div className="flex gap-3">
+                  <label className="flex items-center gap-1 text-[10px] cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={mode === 'elements'}
+                      onChange={() => setMode('elements')}
+                      className="h-3 w-3"
+                    />
+                    Elements (jsonb)
+                  </label>
+                  <label className="flex items-center gap-1 text-[10px] cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={mode === 'recordset'}
+                      onChange={() => setMode('recordset')}
+                      className="h-3 w-3"
+                    />
+                    Recordset (typed)
+                  </label>
+                </div>
+
+                {mode === 'elements' && (
+                  <p className="text-[9px] text-muted-foreground">
+                    Reference elements as <code className="font-mono">{unnestAlias || 'f'}.value</code>{' '}
+                    in expressions (jsonb type).
+                  </p>
+                )}
+
+                {mode === 'recordset' && (
+                  <div className="space-y-1">
+                    <p className="text-[9px] text-muted-foreground">Field types for the recordset:</p>
+                    {recordsetFields.map((f, idx) => (
+                      <div key={f.name} className="flex items-center gap-1">
+                        <span className="font-mono text-[10px] flex-1">{f.name}</span>
+                        <select
+                          value={f.pgType}
+                          onChange={(e) => updateFieldPgType(idx, e.target.value)}
+                          className="rounded border px-1 py-0.5 text-[10px] bg-background"
+                        >
+                          {DEFAULT_PG_TYPES.map((t) => (
+                            <option key={t} value={t}>{t}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                    {recordsetFields.length === 0 && (
+                      <p className="text-[9px] text-amber-600">
+                        No item schema defined — add field definitions in Admin → JSON Structures.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <Button
+                  size="sm"
+                  className="w-full h-6 text-[10px]"
+                  variant="outline"
+                  onClick={() => handleAdd(field.key)}
+                  disabled={!unnestAlias.trim() || (mode === 'recordset' && recordsetFields.length === 0)}
+                >
+                  Add LATERAL JOIN
+                </Button>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Inline JSON path explorer
+// ---------------------------------------------------------------------------
+
+function InlinePathExplorer({
+  tableAlias,
+  columnName,
+}: {
+  tableAlias: string
+  columnName: string
+}) {
+  const addColumn = useQueryStore((s) => s.addColumn)
+
+  const [open, setOpen] = useState(false)
+  const [jsonText, setJsonText] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [pathOptions, setPathOptions] = useState<ReturnType<typeof flattenToPathOptions>>([])
+  const [aliasOverrides, setAliasOverrides] = useState<Record<string, string>>({})
+
+  const handleParse = () => {
+    setError(null)
+    setPathOptions([])
+    setAliasOverrides({})
+    if (!jsonText.trim()) return
+    try {
+      const parsed = JSON.parse(jsonText)
+      const fields = inferJsonStructure(parsed)
+      const options = flattenToPathOptions(fields, tableAlias, columnName)
+      setPathOptions(options)
+      const defaults: Record<string, string> = {}
+      for (const opt of options) {
+        defaults[opt.path] = suggestAlias(opt.path)
+      }
+      setAliasOverrides(defaults)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Invalid JSON')
+    }
+  }
+
+  const handleAdd = (pgExpression: string, path: string) => {
+    const alias = aliasOverrides[path] ?? suggestAlias(path)
+    addColumn({
+      id: crypto.randomUUID(),
+      tableAlias: '__expr__',
+      columnName: alias,
+      alias,
+      expression: pgExpression,
+    })
+  }
+
+  return (
+    <div className="border-t pt-2 mt-2">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground w-full"
+      >
+        {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+        Paste JSON sample to extract paths
+      </button>
+
+      {open && (
+        <div className="mt-2 space-y-2">
+          <textarea
+            value={jsonText}
+            onChange={(e) => setJsonText(e.target.value)}
+            className="w-full rounded border bg-muted/20 p-1.5 text-[10px] font-mono resize-y min-h-[60px]"
+            placeholder={'{ "shift": "morning", "prod_out": 120 }'}
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full h-6 text-[10px]"
+            onClick={handleParse}
+          >
+            Parse →
+          </Button>
+
+          {error && (
+            <p className="text-[10px] text-destructive">{error}</p>
+          )}
+
+          {pathOptions.length > 0 && (
+            <div className="space-y-1 rounded border bg-muted/20 p-1.5 max-h-48 overflow-y-auto">
+              {pathOptions.map((opt) => (
+                <div key={opt.path} className="flex items-center gap-1.5 text-[10px]">
+                  <span className="flex-1 font-mono text-muted-foreground truncate" title={opt.pgExpression}>
+                    {opt.label}
+                  </span>
+                  <Input
+                    value={aliasOverrides[opt.path] ?? ''}
+                    onChange={(e) =>
+                      setAliasOverrides((prev) => ({ ...prev, [opt.path]: e.target.value }))
+                    }
+                    className="h-5 text-[10px] font-mono w-24"
+                    placeholder="alias"
+                  />
+                  <button
+                    onClick={() => handleAdd(opt.pgExpression, opt.path)}
+                    className="text-[10px] text-primary hover:underline shrink-0"
+                  >
+                    + Add
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -169,6 +478,9 @@ export function JsonbMappingPanel() {
   const jsonbMappings     = useQueryStore((s) => s.queryState.jsonbMappings)
   const setJsonbMapping   = useQueryStore((s) => s.setJsonbMapping)
   const clearJsonbMapping = useQueryStore((s) => s.clearJsonbMapping)
+  const addColumn         = useQueryStore((s) => s.addColumn)
+
+  const builtinStructures = useJsonStructureStore((s) => s.builtinStructures)
   const structures        = useJsonStructureStore((s) => s.structures)
 
   // Per-column mode state
@@ -192,6 +504,23 @@ export function JsonbMappingPanel() {
     )
   }
 
+  const handleAddSkuColumns = (tableAlias: string, columnName: string) => {
+    addColumn({
+      id: crypto.randomUUID(),
+      tableAlias: '__expr__',
+      columnName: 'sku_code',
+      alias: 'sku_code',
+      expression: `${tableAlias}.${columnName}#>>'{sku,sku}'`,
+    })
+    addColumn({
+      id: crypto.randomUUID(),
+      tableAlias: '__expr__',
+      columnName: 'sku_label',
+      alias: 'sku_label',
+      expression: `${tableAlias}.${columnName}#>>'{sku,label}'`,
+    })
+  }
+
   return (
     <div className="p-3 space-y-4">
       <p className="text-xs text-muted-foreground">
@@ -203,8 +532,18 @@ export function JsonbMappingPanel() {
         const mapping = jsonbMappings.find(
           (m) => m.tableAlias === tableAlias && m.columnName === columnName
         )
-        const structure = mapping ? structures.find((s) => s.id === mapping.structureId) : undefined
+
+        // Look up structure in builtins first, then DB structures
+        const allStructures = [...builtinStructures, ...structures]
+        const structure = mapping
+          ? allStructures.find((s) => s.id === mapping.structureId)
+          : undefined
+
         const mode = getMode(colKey)
+        const isSkuPreset = mapping && ST_ONE_AGG_INFO_IDS.has(mapping.structureId)
+
+        // Array fields in the structure (for unnesting)
+        const arrayFields = structure?.definition.fields.filter((f) => f.type === 'array') ?? []
 
         return (
           <div key={colKey} className="rounded-md border p-3 space-y-3">
@@ -214,7 +553,7 @@ export function JsonbMappingPanel() {
               <span className="font-mono">{tableAlias}.{columnName}</span>
             </div>
 
-            {/* Structure selector */}
+            {/* Structure selector with preset optgroups */}
             <div className="flex items-center gap-2">
               <select
                 className="flex-1 rounded border px-2 py-1 text-xs bg-background"
@@ -226,9 +565,18 @@ export function JsonbMappingPanel() {
                 }}
               >
                 <option value="">— no structure —</option>
-                {structures.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
+                <optgroup label="ST-One presets">
+                  {builtinStructures.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </optgroup>
+                {structures.length > 0 && (
+                  <optgroup label="Custom structures">
+                    {structures.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
               {mapping && (
                 <button
@@ -240,7 +588,22 @@ export function JsonbMappingPanel() {
               )}
             </div>
 
-            {/* Mode tabs (only shown when a structure is mapped) */}
+            {/* SKU columns shortcut (agg_event.info presets only) */}
+            {isSkuPreset && (
+              <button
+                onClick={() => handleAddSkuColumns(tableAlias, columnName)}
+                className={cn(
+                  'flex items-center gap-1.5 w-full rounded px-2 py-1',
+                  'bg-amber-50 border border-amber-200 text-amber-700',
+                  'text-[10px] font-medium hover:bg-amber-100 transition-colors'
+                )}
+              >
+                <Zap className="h-3 w-3 shrink-0" />
+                Quick add: SKU columns (sku_code, sku_label)
+              </button>
+            )}
+
+            {/* Mode tabs + content (only shown when a structure is mapped) */}
             {structure && (
               <div className="space-y-2">
                 <div className="flex rounded-md border overflow-hidden text-[10px] font-medium">
@@ -269,10 +632,19 @@ export function JsonbMappingPanel() {
                 </div>
 
                 {mode === 'path' && (
-                  <p className="text-[10px] text-muted-foreground">
-                    Check individual paths directly in the table node on the canvas.
-                    Each path appears in SELECT as a separate <code className="font-mono">#&gt;&gt;</code> expression.
-                  </p>
+                  <div className="space-y-2">
+                    <p className="text-[10px] text-muted-foreground">
+                      Check individual paths directly in the table node on the canvas.
+                      Each path appears in SELECT as a separate <code className="font-mono">#&gt;&gt;</code> expression.
+                    </p>
+                    {arrayFields.length > 0 && (
+                      <ArrayUnnestSection
+                        tableAlias={tableAlias}
+                        columnName={columnName}
+                        arrayFields={arrayFields}
+                      />
+                    )}
+                  </div>
                 )}
 
                 {mode === 'expand' && (
@@ -284,17 +656,12 @@ export function JsonbMappingPanel() {
                 )}
               </div>
             )}
+
+            {/* Inline path explorer — always visible */}
+            <InlinePathExplorer tableAlias={tableAlias} columnName={columnName} />
           </div>
         )
       })}
-
-      {structures.length === 0 && (
-        <p className="text-xs text-amber-600">
-          No JSON structures defined yet. Visit{' '}
-          <a href="/admin/json-structures" className="underline">Admin → JSON Structures</a>{' '}
-          to create one.
-        </p>
-      )}
     </div>
   )
 }
