@@ -226,10 +226,16 @@ export function resolveTemplate(
 ): { queryState: QueryState; userEditedSql: string | null } | null {
   switch (id) {
     case 'standard-time-series':
-      return { queryState: emptyQueryState(), userEditedSql: STANDARD_TIME_SERIES_SQL }
+      return {
+        queryState: buildEventTagQueryState(schemaStore, 'e', 't'),
+        userEditedSql: STANDARD_TIME_SERIES_SQL,
+      }
 
     case 'tag-filtered-by-state':
-      return { queryState: emptyQueryState(), userEditedSql: TAG_FILTERED_BY_STATE_SQL }
+      return {
+        queryState: buildEventTagQueryState(schemaStore, 'e', 't'),
+        userEditedSql: TAG_FILTERED_BY_STATE_SQL,
+      }
 
     case 'oee-data-table':
       return { queryState: buildOeeQueryState(schemaStore), userEditedSql: null }
@@ -248,6 +254,85 @@ export function resolveTemplate(
 
     default:
       return null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared builder: event + tag on canvas, standard join, time column set
+// Used by the two UNION ALL templates — the SQL can't be fully represented
+// in the builder, so userEditedSql carries the complete query, but the
+// canvas shows the core table relationships as a visual reference.
+// ---------------------------------------------------------------------------
+
+function buildEventTagQueryState(
+  schemaStore: { schemas: AppSchema[]; tables: AppTable[]; columns: Record<number, AppColumn[]> },
+  eventAlias: string,
+  tagAlias: string
+): QueryState {
+  const { schemas, tables, columns } = schemaStore
+
+  const eventTable = tables.find((t) => t.name === 'event')
+  const tagTable   = tables.find((t) => t.name === 'tag')
+
+  if (!eventTable || !tagTable) return emptyQueryState()
+
+  const getSchemaName = (schemaId: number) =>
+    schemas.find((s) => s.id === schemaId)?.name ?? 'public'
+
+  const toColumnMeta = (cols: AppColumn[]) =>
+    cols.map((c) => ({
+      id: c.id,
+      name: c.name,
+      pgType: c.pgType,
+      isNullable: c.isNullable,
+      isPrimaryKey: c.isPrimaryKey,
+    }))
+
+  const tableInstances: TableInstance[] = [
+    {
+      id: crypto.randomUUID(),
+      tableId: eventTable.id,
+      tableName: eventTable.name,
+      schemaName: getSchemaName(eventTable.schemaId),
+      alias: eventAlias,
+      position: { x: 0, y: 100 },
+      columns: toColumnMeta(columns[eventTable.id] ?? []),
+    },
+    {
+      id: crypto.randomUUID(),
+      tableId: tagTable.id,
+      tableName: tagTable.name,
+      schemaName: getSchemaName(tagTable.schemaId),
+      alias: tagAlias,
+      position: { x: 380, y: 100 },
+      columns: toColumnMeta(columns[tagTable.id] ?? []),
+    },
+  ]
+
+  const eventCols = columns[eventTable.id] ?? []
+  const tagCols   = columns[tagTable.id] ?? []
+
+  const joins: JoinDef[] = []
+  if (eventCols.some((c) => c.name === 'tag') && tagCols.some((c) => c.name === 'name')) {
+    joins.push({
+      id: crypto.randomUUID(),
+      type: 'INNER',
+      leftTableAlias: eventAlias,
+      leftColumn: 'tag',
+      rightTableAlias: tagAlias,
+      rightColumn: 'name',
+    })
+  }
+
+  // Mark the time column so Grafana tab shows suggestions
+  const hasTimeCol = eventCols.some((c) => c.name === 'time')
+
+  return {
+    ...emptyQueryState(),
+    tables: tableInstances,
+    joins,
+    timeColumn: hasTimeCol ? { tableAlias: eventAlias, columnName: 'time' } : undefined,
+    grafanaPanelType: 'time-series',
   }
 }
 
