@@ -20,7 +20,8 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
   const toggleColumn = useQueryStore((s) => s.toggleColumn)
   const removeTable = useQueryStore((s) => s.removeTable)
   const updateTableAlias = useQueryStore((s) => s.updateTableAlias)
-  const structures = useJsonStructureStore((s) => s.structures)
+  const builtinStructures = useJsonStructureStore((s) => s.builtinStructures)
+  const structures        = useJsonStructureStore((s) => s.structures)
 
   const [editingAlias, setEditingAlias] = useState(false)
   const [aliasInput, setAliasInput] = useState(instance.alias)
@@ -128,7 +129,9 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
           const mapping = isJsonb
             ? jsonbMappings.find((m) => m.tableAlias === instance.alias && m.columnName === col.name)
             : undefined
-          const structure = mapping ? structures.find((s) => s.id === mapping.structureId) : undefined
+          const structure = mapping
+            ? [...builtinStructures, ...structures].find((s) => s.id === mapping.structureId)
+            : undefined
           const pathOptions = structure
             ? flattenToPathOptions(structure.definition.fields, instance.alias, col.name)
             : []

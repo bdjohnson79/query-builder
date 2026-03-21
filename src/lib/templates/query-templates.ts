@@ -1,9 +1,13 @@
 import type { AppSchema, AppTable, AppColumn } from '@/types/schema'
 import {
   emptyQueryState,
+  emptyFilterGroup,
   type QueryState,
   type TableInstance,
   type JoinDef,
+  type SelectedColumn,
+  type JsonbExpansion,
+  type JsonbMapping,
 } from '@/types/query'
 
 export interface QueryTemplate {
@@ -219,7 +223,7 @@ ORDER BY l.name`
 export function resolveTemplate(
   id: string,
   schemaStore: { schemas: AppSchema[]; tables: AppTable[]; columns: Record<number, AppColumn[]> }
-): { queryState: QueryState; userEditedSql: string } | null {
+): { queryState: QueryState; userEditedSql: string | null } | null {
   switch (id) {
     case 'standard-time-series':
       return { queryState: emptyQueryState(), userEditedSql: STANDARD_TIME_SERIES_SQL }
@@ -228,7 +232,7 @@ export function resolveTemplate(
       return { queryState: emptyQueryState(), userEditedSql: TAG_FILTERED_BY_STATE_SQL }
 
     case 'oee-data-table':
-      return { queryState: buildOeeQueryState(schemaStore), userEditedSql: OEE_DATA_TABLE_SQL }
+      return { queryState: buildOeeQueryState(schemaStore), userEditedSql: null }
 
     case 'line-selector-variable':
       return {
@@ -247,6 +251,35 @@ export function resolveTemplate(
   }
 }
 
+// oee_1h fields exactly as they appear in the jsonb_to_record CROSS JOIN
+// (authoritative source: OEE_DATA_TABLE_SQL above)
+const OEE_1H_FIELDS: { name: string; pgType: string }[] = [
+  { name: 'shift',                    pgType: 'text' },
+  { name: 'sku',                      pgType: 'jsonb' },
+  { name: 'time_total',               pgType: 'float8' },
+  { name: 'time_run',                 pgType: 'float8' },
+  { name: 'time_stop',                pgType: 'float8' },
+  { name: 'stop_count',               pgType: 'float8' },
+  { name: 'time_scheduled',           pgType: 'float8' },
+  { name: 'time_unscheduled',         pgType: 'float8' },
+  { name: 'time_planned',             pgType: 'float8' },
+  { name: 'time_planned_maintenance', pgType: 'float8' },
+  { name: 'time_planned_sanitation',  pgType: 'float8' },
+  { name: 'time_planned_changeover',  pgType: 'float8' },
+  { name: 'time_planned_breaks',      pgType: 'float8' },
+  { name: 'time_unplanned',           pgType: 'float8' },
+  { name: 'time_unplanned_logistics', pgType: 'float8' },
+  { name: 'time_unplanned_breakdown', pgType: 'float8' },
+  { name: 'time_unplanned_process',   pgType: 'float8' },
+  { name: 'prod_target',              pgType: 'float8' },
+  { name: 'time_prod_main',           pgType: 'float8' },
+  { name: 'time_prod_out',            pgType: 'float8' },
+  { name: 'prod_main',                pgType: 'float8' },
+  { name: 'prod_out',                 pgType: 'float8' },
+  { name: 'prod_main_machine',        pgType: 'float8' },
+  { name: 'prod_out_machine',         pgType: 'float8' },
+]
+
 function buildOeeQueryState(schemaStore: {
   schemas: AppSchema[]
   tables: AppTable[]
@@ -254,7 +287,7 @@ function buildOeeQueryState(schemaStore: {
 }): QueryState {
   const { schemas, tables, columns } = schemaStore
 
-  const aggTable = tables.find((t) => t.name === 'agg')
+  const aggTable      = tables.find((t) => t.name === 'agg')
   const aggEventTable = tables.find((t) => t.name === 'agg_event')
   const locationTable = tables.find((t) => t.name === 'location')
 
@@ -304,13 +337,15 @@ function buildOeeQueryState(schemaStore: {
     },
   ]
 
-  const aggCols = columns[aggTable.id] ?? []
+  const aggCols      = columns[aggTable.id] ?? []
   const aggEventCols = columns[aggEventTable.id] ?? []
   const locationCols = columns[locationTable.id] ?? []
 
+  // -------------------------------------------------------------------------
+  // Joins
+  // -------------------------------------------------------------------------
   const joins: JoinDef[] = []
 
-  // agg INNER JOIN location ON location.slug = agg.location_slug
   if (aggCols.some((c) => c.name === 'location_slug') && locationCols.some((c) => c.name === 'slug')) {
     joins.push({
       id: crypto.randomUUID(),
@@ -322,7 +357,6 @@ function buildOeeQueryState(schemaStore: {
     })
   }
 
-  // agg INNER JOIN agg_event ON agg_event.agg = agg.id
   if (aggCols.some((c) => c.name === 'id') && aggEventCols.some((c) => c.name === 'agg')) {
     joins.push({
       id: crypto.randomUUID(),
@@ -334,5 +368,87 @@ function buildOeeQueryState(schemaStore: {
     })
   }
 
-  return { ...emptyQueryState(), tables: tableInstances, joins }
+  // -------------------------------------------------------------------------
+  // JSONB mapping + expansion (ae.info → oee_1h preset, expand alias 'i')
+  // -------------------------------------------------------------------------
+  const expandAlias = 'i'
+
+  const jsonbMappings: JsonbMapping[] = [
+    { tableAlias: 'ae', columnName: 'info', structureId: -1 }, // -1 = oee_1h builtin
+  ]
+
+  const jsonbExpansions: JsonbExpansion[] = [
+    {
+      id: crypto.randomUUID(),
+      tableAlias: 'ae',
+      columnName: 'info',
+      expandAlias,
+      fields: OEE_1H_FIELDS,
+    },
+  ]
+
+  // -------------------------------------------------------------------------
+  // Selected columns
+  // -------------------------------------------------------------------------
+  const selectedColumns: SelectedColumn[] = [
+    // time_bucket('1h', ae.time) AS time  — TimescaleDB time grouping
+    {
+      id: crypto.randomUUID(),
+      tableAlias: '__expr__',
+      columnName: 'time',
+      alias: 'time',
+      expression: "time_bucket('1h', ae.time)",
+    },
+    // l.name AS line_name
+    {
+      id: crypto.randomUUID(),
+      tableAlias: 'l',
+      columnName: 'name',
+      alias: 'line_name',
+    },
+    // l.slug
+    {
+      id: crypto.randomUUID(),
+      tableAlias: 'l',
+      columnName: 'slug',
+    },
+    // All oee_1h JSONB expansion fields (alias 'i')
+    ...OEE_1H_FIELDS.map((f): SelectedColumn => ({
+      id: crypto.randomUUID(),
+      tableAlias: expandAlias,
+      columnName: f.name,
+    })),
+  ]
+
+  // -------------------------------------------------------------------------
+  // WHERE: $__timeFilter + slug_agg filter + $area Grafana variable
+  // -------------------------------------------------------------------------
+  const where = {
+    ...emptyFilterGroup(),
+    rules: [
+      { id: crypto.randomUUID(), field: 'ae.time',    operator: '$__timeFilter', value: '' },
+      { id: crypto.randomUUID(), field: 'a.slug_agg', operator: '=',             value: 'oee_1h' },
+      { id: crypto.randomUUID(), field: 'l.id',       operator: 'in',            value: '$area' },
+    ],
+  }
+
+  // -------------------------------------------------------------------------
+  // ORDER BY ae.time ASC
+  // -------------------------------------------------------------------------
+  const orderBy = [
+    { tableAlias: 'ae', columnName: 'time', direction: 'ASC' as const },
+  ]
+
+  return {
+    ...emptyQueryState(),
+    tables: tableInstances,
+    joins,
+    jsonbMappings,
+    jsonbExpansions,
+    selectedColumns,
+    where,
+    orderBy,
+    timeColumn: { tableAlias: 'ae', columnName: 'time' },
+    grafanaPanelType: 'table',
+  }
 }
