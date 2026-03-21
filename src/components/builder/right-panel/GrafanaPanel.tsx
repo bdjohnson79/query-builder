@@ -4,7 +4,7 @@ import { useQueryStore } from '@/store/queryStore'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Copy, Check, Plus, AlertTriangle } from 'lucide-react'
+import { Copy, Check, Plus, AlertTriangle, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { validatePanelType, findFirstTimestampColumn } from '@/lib/templates/panel-validation'
 import type { GrafanaPanelType } from '@/types/query'
@@ -219,6 +219,173 @@ function TimeAxisSection() {
             </button>
           </div>
         </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// TimescaleDB time_bucket builder
+// ---------------------------------------------------------------------------
+
+const TS_INTERVALS = [
+  { label: '1 minute',   value: '1 minute' },
+  { label: '5 minutes',  value: '5 minutes' },
+  { label: '10 minutes', value: '10 minutes' },
+  { label: '15 minutes', value: '15 minutes' },
+  { label: '30 minutes', value: '30 minutes' },
+  { label: '1 hour',     value: '1 hour' },
+  { label: '3 hours',    value: '3 hours' },
+  { label: '6 hours',    value: '6 hours' },
+  { label: '12 hours',   value: '12 hours' },
+  { label: '1 day',      value: '1 day' },
+  { label: '7 days',     value: '7 days' },
+  { label: '1 month',    value: '1 month' },
+  { label: '$__interval (Grafana auto)', value: '$__interval' },
+]
+
+function TimeBucketBuilder() {
+  const tables              = useQueryStore((s) => s.queryState.tables)
+  const timeColumn          = useQueryStore((s) => s.queryState.timeColumn)
+  const timescaleBucket     = useQueryStore((s) => s.queryState.timescaleBucket)
+  const setTimescaleBucket  = useQueryStore((s) => s.setTimescaleBucket)
+
+  const [column,   setColumn]   = useState('')
+  const [interval, setInterval] = useState('1 hour')
+  const [alias,    setAlias]    = useState('time')
+  const [gapfill,  setGapfill]  = useState(false)
+
+  // Auto-wire the designated time column when the component mounts or when timeColumn changes
+  useEffect(() => {
+    if (timeColumn && !column) {
+      setColumn(`${timeColumn.tableAlias}.${timeColumn.columnName}`)
+    }
+  }, [timeColumn, column])
+
+  const timestampCols = tables.flatMap((t) =>
+    t.columns
+      .filter((c) => isTimestampType(c.pgType))
+      .map((c) => ({ label: `${t.alias}.${c.name}`, value: `${t.alias}.${c.name}`, tableAlias: t.alias, columnName: c.name }))
+  )
+
+  const fn = gapfill ? 'time_bucket_gapfill' : 'time_bucket'
+  const intervalArg = interval.startsWith('$') ? interval : `'${interval}'`
+  const preview = column ? `${fn}(${intervalArg}, ${column}) AS "${alias || 'time'}"` : ''
+
+  const apply = () => {
+    if (!column) return
+    const dotIdx = column.indexOf('.')
+    setTimescaleBucket({
+      columnRef: { tableAlias: column.slice(0, dotIdx), columnName: column.slice(dotIdx + 1) },
+      interval,
+      alias: alias.trim() || 'time',
+      gapfill,
+    })
+  }
+
+  const clear = () => setTimescaleBucket(undefined)
+
+  if (tables.length === 0) {
+    return <p className="text-xs text-muted-foreground py-2">Add tables to the canvas first.</p>
+  }
+
+  return (
+    <div className="space-y-2">
+      {timescaleBucket && (
+        <div className="flex items-center justify-between rounded border border-green-300 bg-green-50 px-2 py-1.5">
+          <code className="flex-1 text-[11px] font-mono text-green-700 break-all">
+            {timescaleBucket.gapfill ? 'time_bucket_gapfill' : 'time_bucket'}
+            ({timescaleBucket.interval.startsWith('$') ? timescaleBucket.interval : `'${timescaleBucket.interval}'`}, {timescaleBucket.columnRef.tableAlias}.{timescaleBucket.columnRef.columnName}) AS &quot;{timescaleBucket.alias}&quot;
+          </code>
+          <button
+            onClick={clear}
+            className="ml-1 shrink-0 text-muted-foreground hover:text-destructive"
+            title="Remove time bucket"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
+      {timestampCols.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No timestamp columns found in current tables.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-1.5">
+            <div className="space-y-0.5">
+              <Label className="text-[10px] text-muted-foreground">Time column</Label>
+              <select
+                className="w-full rounded border border-border bg-background px-2 py-1 text-xs"
+                value={column}
+                onChange={(e) => setColumn(e.target.value)}
+              >
+                <option value="">Select…</option>
+                {timestampCols.map((c) => (
+                  <option key={c.value} value={c.value}>{c.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-0.5">
+              <Label className="text-[10px] text-muted-foreground">Interval</Label>
+              <select
+                className="w-full rounded border border-border bg-background px-2 py-1 text-xs"
+                value={interval}
+                onChange={(e) => setInterval(e.target.value)}
+              >
+                {TS_INTERVALS.map((i) => (
+                  <option key={i.value} value={i.value}>{i.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5">
+            <div className="space-y-0.5">
+              <Label className="text-[10px] text-muted-foreground">AS alias</Label>
+              <input
+                className="w-full rounded border border-border bg-background px-2 py-1 text-xs font-mono"
+                value={alias}
+                onChange={(e) => setAlias(e.target.value)}
+                placeholder="time"
+              />
+            </div>
+            <div className="flex items-end pb-1">
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={gapfill}
+                  onChange={(e) => setGapfill(e.target.checked)}
+                />
+                Gapfill
+              </label>
+            </div>
+          </div>
+
+          {gapfill && (
+            <p className="text-[10px] text-muted-foreground leading-relaxed rounded border border-blue-200 bg-blue-50/50 px-2 py-1.5">
+              Uses <code className="font-mono">time_bucket_gapfill</code>. Set <strong>locf</strong> or <strong>interpolate</strong>
+              {' '}per column in the Columns tab to fill gaps.
+            </p>
+          )}
+
+          {preview && (
+            <div className="flex items-center gap-1 rounded bg-muted/40 border px-2 py-1">
+              <code className="flex-1 text-[10px] font-mono text-muted-foreground break-all">{preview}</code>
+              <CopyButton text={preview} />
+            </div>
+          )}
+
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full"
+            disabled={!column}
+            onClick={apply}
+          >
+            <Plus className="mr-1 h-3 w-3" />
+            {timescaleBucket ? 'Update' : 'Apply'} time_bucket
+          </Button>
+        </>
       )}
     </div>
   )
@@ -611,12 +778,23 @@ export function GrafanaPanel() {
           <VariableModeToggle />
         </div>
 
+        {/* TimescaleDB time_bucket builder */}
+        <div className="border-t pt-4 space-y-2">
+          <div>
+            <p className="text-xs font-semibold">TimescaleDB time_bucket</p>
+            <p className="text-[11px] text-muted-foreground">
+              Prepend <code className="font-mono">time_bucket()</code> to SELECT and GROUP BY for native TimescaleDB aggregation.
+            </p>
+          </div>
+          <TimeBucketBuilder />
+        </div>
+
         {/* timeGroup builder */}
         <div className="border-t pt-4 space-y-2">
           <div>
             <p className="text-xs font-semibold">$__timeGroup Builder</p>
             <p className="text-[11px] text-muted-foreground">
-              Build a time-series GROUP BY bucket for Grafana panels.
+              Build a time-series GROUP BY bucket for Grafana panels (Grafana macro approach).
             </p>
           </div>
           <TimeGroupBuilder />

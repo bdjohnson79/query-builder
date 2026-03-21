@@ -18,6 +18,8 @@ import {
   type CTEDef,
   type JsonbMapping,
   type GrafanaPanelType,
+  type TimescaleBucket,
+  type GapfillStrategy,
 } from '@/types/query'
 
 interface QueryStore {
@@ -78,6 +80,10 @@ interface QueryStore {
   setPanelType: (type: GrafanaPanelType | undefined) => void
   setIsGrafanaVariable: (enabled: boolean) => void
   setTimeColumn: (col: { tableAlias: string; columnName: string } | undefined) => void
+
+  // TimescaleDB
+  setTimescaleBucket: (bucket: TimescaleBucket | undefined) => void
+  setGapfillStrategy: (columnId: string, strategy: 'locf' | 'interpolate' | null) => void
 
   // Manual SQL editing
   setUserEditedSql: (sql: string | null) => void
@@ -481,6 +487,25 @@ export const useQueryStore = create<QueryStore>()(
         return { queryState: next, generatedSql: rebuildSql(next) }
       }),
 
+    setTimescaleBucket: (bucket) =>
+      set((s) => {
+        const next = { ...s.queryState, timescaleBucket: bucket }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
+    setGapfillStrategy: (columnId, strategy) =>
+      set((s) => {
+        const existing = s.queryState.gapfillStrategies ?? []
+        const filtered = existing.filter((g) => g.selectedColumnId !== columnId)
+        const next: QueryState = {
+          ...s.queryState,
+          gapfillStrategies: strategy
+            ? [...filtered, { selectedColumnId: columnId, strategy }]
+            : filtered,
+        }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
     setUserEditedSql: (sql) =>
       set({ userEditedSql: sql }),
 
@@ -507,6 +532,7 @@ export const useQueryStore = create<QueryStore>()(
         if (!state.queryState.jsonbExpansions) state.queryState.jsonbExpansions = []
         if (!state.queryState.jsonbArrayUnnestings) state.queryState.jsonbArrayUnnestings = []
         if (state.queryState.isGrafanaVariable === undefined) state.queryState.isGrafanaVariable = false
+        if (!state.queryState.gapfillStrategies) state.queryState.gapfillStrategies = []
         // timeColumn backfill: null → undefined (JSON serializes undefined as absent, null may appear)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         if ((state.queryState as any).timeColumn === null) {

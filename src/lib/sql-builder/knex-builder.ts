@@ -6,6 +6,8 @@ import type {
   WindowFunctionDef,
   CTEDef,
   OrderByItem,
+  TimescaleBucket,
+  GapfillStrategy,
 } from '@/types/query'
 
 // ---------------------------------------------------------------------------
@@ -84,7 +86,7 @@ function tableRef(schemaName: string, tableName: string, omitSchema: boolean): s
 // ---------------------------------------------------------------------------
 
 function buildRawSql(state: QueryState): string {
-  const { tables, joins, selectedColumns, where, groupBy, having, orderBy, limit, offset, distinct, windowFunctions, ctes } = state
+  const { tables, joins, selectedColumns, where, groupBy, having, orderBy, limit, offset, distinct, windowFunctions, ctes, timescaleBucket, gapfillStrategies } = state
 
   if (tables.length === 0) return '-- Drag a table onto the canvas to start'
 
@@ -102,7 +104,7 @@ function buildRawSql(state: QueryState): string {
   }
 
   // SELECT
-  const selectCols = buildSelectList(selectedColumns, windowFunctions)
+  const selectCols = buildSelectList(selectedColumns, windowFunctions, timescaleBucket, gapfillStrategies)
   parts.push(`SELECT${distinct ? ' DISTINCT' : ''} ${selectCols}`)
 
   // FROM
@@ -203,12 +205,16 @@ function buildRawSql(state: QueryState): string {
     if (expr) parts.push(`WHERE ${expr}`)
   }
 
-  // GROUP BY
-  if (groupBy.length > 0) {
-    const cols = groupBy.map(c =>
+  // GROUP BY (prepend time_bucket expression when TimescaleDB bucketing is active)
+  if (timescaleBucket || groupBy.length > 0) {
+    const items: string[] = []
+    if (timescaleBucket) {
+      items.push(buildBucketExpr(timescaleBucket))
+    }
+    items.push(...groupBy.map(c =>
       c.tableAlias === '__grafana__' ? c.columnName : `${qi(c.tableAlias)}.${qi(c.columnName)}`
-    ).join(', ')
-    parts.push(`GROUP BY ${cols}`)
+    ))
+    parts.push(`GROUP BY ${items.join(', ')}`)
   }
 
   // HAVING
@@ -234,11 +240,36 @@ function buildRawSql(state: QueryState): string {
 // SELECT list
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// TimescaleDB bucket expression (shared between SELECT and GROUP BY)
+// ---------------------------------------------------------------------------
+
+function buildBucketExpr(bucket: TimescaleBucket): string {
+  const fn = bucket.gapfill ? 'time_bucket_gapfill' : 'time_bucket'
+  const colRef = `${qi(bucket.columnRef.tableAlias)}.${qi(bucket.columnRef.columnName)}`
+  // Grafana variables (e.g. $__interval) must not be quoted
+  const intervalArg = bucket.interval.startsWith('$')
+    ? bucket.interval
+    : `'${bucket.interval}'`
+  return `${fn}(${intervalArg}, ${colRef})`
+}
+
 function buildSelectList(
   selectedColumns: QueryState['selectedColumns'],
-  windowFunctions: WindowFunctionDef[]
+  windowFunctions: WindowFunctionDef[],
+  timescaleBucket?: TimescaleBucket,
+  gapfillStrategies?: GapfillStrategy[]
 ): string {
   const cols: string[] = []
+
+  // Prepend time_bucket / time_bucket_gapfill column when configured
+  if (timescaleBucket) {
+    const bucketExpr = buildBucketExpr(timescaleBucket)
+    const alias = timescaleBucket.alias || 'time'
+    cols.push(`${bucketExpr} AS ${qi(alias)}`)
+  }
+
+  const gapfillActive = !!timescaleBucket?.gapfill
 
   for (const col of selectedColumns) {
     // Base reference: expression or table.column
@@ -254,6 +285,14 @@ function buildSelectList(
       expr = `${col.aggregate}(${ref})`
     } else {
       expr = ref
+    }
+
+    // Wrap with gapfill strategy (locf/interpolate) when gapfill is active
+    if (gapfillActive && gapfillStrategies) {
+      const strategy = gapfillStrategies.find((g) => g.selectedColumnId === col.id)?.strategy
+      if (strategy) {
+        expr = `${strategy}(${expr})`
+      }
     }
 
     cols.push(col.alias ? `${expr} AS ${qi(col.alias)}` : expr)

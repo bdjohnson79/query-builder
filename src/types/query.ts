@@ -66,6 +66,20 @@ export interface JsonbArrayUnnesting {
   recordsetFields: { name: string; pgType: string }[]  // used when mode === 'recordset'
 }
 
+// TimescaleDB time_bucket / time_bucket_gapfill grouping
+export interface TimescaleBucket {
+  columnRef: { tableAlias: string; columnName: string }  // the timestamp column to bucket
+  interval: string   // e.g. '1 hour', '5 minutes', '$__interval'
+  alias: string      // AS alias in SELECT (default: 'time')
+  gapfill: boolean   // use time_bucket_gapfill instead of time_bucket
+}
+
+// Per-column gapfill strategy when time_bucket_gapfill is active
+export interface GapfillStrategy {
+  selectedColumnId: string   // id of the SelectedColumn to wrap
+  strategy: 'locf' | 'interpolate'
+}
+
 export interface OrderByItem {
   tableAlias: string
   columnName: string
@@ -124,6 +138,8 @@ export interface QueryState {
   grafanaPanelType?: GrafanaPanelType
   isGrafanaVariable?: boolean
   timeColumn?: { tableAlias: string; columnName: string }
+  timescaleBucket?: TimescaleBucket
+  gapfillStrategies: GapfillStrategy[]
 }
 
 export function emptyFilterGroup(): FilterGroup {
@@ -151,5 +167,7 @@ export function emptyQueryState(): QueryState {
     grafanaPanelType: undefined,
     isGrafanaVariable: false,
     timeColumn: undefined,
+    timescaleBucket: undefined,
+    gapfillStrategies: [],
   }
 }

@@ -11,7 +11,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { ChevronUp, ChevronDown, X, Plus, GitBranch, Clock } from 'lucide-react'
+import { ChevronUp, ChevronDown, X, Plus, GitBranch, Clock, Sigma } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { SelectedColumn } from '@/types/query'
 
@@ -205,6 +205,9 @@ function ColumnRow({
   onRemove,
   onUpdateAlias,
   onUpdateAggregate,
+  gapfillActive,
+  gapfillStrategy,
+  onUpdateGapfill,
 }: {
   col: SelectedColumn
   isFirst: boolean
@@ -214,6 +217,9 @@ function ColumnRow({
   onRemove: () => void
   onUpdateAlias: (alias: string) => void
   onUpdateAggregate: (agg: string) => void
+  gapfillActive?: boolean
+  gapfillStrategy?: 'locf' | 'interpolate'
+  onUpdateGapfill?: (strategy: 'locf' | 'interpolate' | null) => void
 }) {
   const [aliasVal, setAliasVal] = useState(col.alias ?? '')
 
@@ -276,6 +282,20 @@ function ColumnRow({
         ))}
       </select>
 
+      {/* Gapfill strategy (only shown when time_bucket_gapfill is active) */}
+      {gapfillActive && (
+        <select
+          className="rounded border bg-blue-50 border-blue-200 px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+          value={gapfillStrategy ?? ''}
+          onChange={(e) => onUpdateGapfill?.(e.target.value as 'locf' | 'interpolate' || null)}
+          title="Gapfill strategy"
+        >
+          <option value="">no fill</option>
+          <option value="locf">locf</option>
+          <option value="interpolate">interpolate</option>
+        </select>
+      )}
+
       {/* Remove */}
       <button
         onClick={onRemove}
@@ -291,21 +311,35 @@ function ColumnRow({
 // Main panel
 // ---------------------------------------------------------------------------
 
-export function SelectColumnsPanel() {
-  const selectedColumns = useQueryStore((s) => s.queryState.selectedColumns)
-  const tables          = useQueryStore((s) => s.queryState.tables)
-  const updateColumn    = useQueryStore((s) => s.updateColumn)
-  const reorderColumns  = useQueryStore((s) => s.reorderColumns)
-  const addColumn       = useQueryStore((s) => s.addColumn)
-  const toggleColumn    = useQueryStore((s) => s.toggleColumn)
+const ST_ONE_AGG_FNS = [
+  { value: 'first',       label: 'first(value, time)',          args: ['value', 'time'] },
+  { value: 'last',        label: 'last(value, time)',           args: ['value', 'time'] },
+  { value: 'increase_v2', label: 'increase_v2(value, resets)',  args: ['value', 'resets'] },
+]
 
-  const [showExprForm, setShowExprForm]   = useState(false)
-  const [exprVal, setExprVal]             = useState('')
-  const [exprAlias, setExprAlias]         = useState('')
-  const [caseOpen, setCaseOpen]           = useState(false)
-  const [showTimeDim, setShowTimeDim]     = useState(false)
-  const [timeDimCol, setTimeDimCol]       = useState('')
-  const [timeDimPreset, setTimeDimPreset] = useState(TIME_DIM_PRESETS[0].label)
+export function SelectColumnsPanel() {
+  const selectedColumns   = useQueryStore((s) => s.queryState.selectedColumns)
+  const tables            = useQueryStore((s) => s.queryState.tables)
+  const timescaleBucket   = useQueryStore((s) => s.queryState.timescaleBucket)
+  const gapfillStrategies = useQueryStore((s) => s.queryState.gapfillStrategies)
+  const updateColumn      = useQueryStore((s) => s.updateColumn)
+  const reorderColumns    = useQueryStore((s) => s.reorderColumns)
+  const addColumn         = useQueryStore((s) => s.addColumn)
+  const toggleColumn      = useQueryStore((s) => s.toggleColumn)
+  const setGapfillStrategy = useQueryStore((s) => s.setGapfillStrategy)
+
+  const [showExprForm, setShowExprForm]       = useState(false)
+  const [exprVal, setExprVal]                 = useState('')
+  const [exprAlias, setExprAlias]             = useState('')
+  const [caseOpen, setCaseOpen]               = useState(false)
+  const [showTimeDim, setShowTimeDim]         = useState(false)
+  const [timeDimCol, setTimeDimCol]           = useState('')
+  const [timeDimPreset, setTimeDimPreset]     = useState(TIME_DIM_PRESETS[0].label)
+  const [showStOneAgg, setShowStOneAgg]       = useState(false)
+  const [stOneFn, setStOneFn]                 = useState('first')
+  const [stOneArg1, setStOneArg1]             = useState('')
+  const [stOneArg2, setStOneArg2]             = useState('')
+  const [stOneAlias, setStOneAlias]           = useState('')
 
   // All timestamp/timestamptz columns from current query tables
   const timestampColumns = tables.flatMap((t) =>
@@ -313,6 +347,13 @@ export function SelectColumnsPanel() {
       .filter((c) => TIMESTAMP_PG_TYPES.some((pt) => c.pgType === pt || c.pgType.startsWith(pt)))
       .map((c) => ({ label: `${t.alias}.${c.name}`, value: `${t.alias}.${c.name}` }))
   )
+
+  // All columns (for ST-One agg helper)
+  const allColumns = tables.flatMap((t) =>
+    t.columns.map((c) => ({ label: `${t.alias}.${c.name}`, value: `${t.alias}.${c.name}` }))
+  )
+
+  const gapfillActive = !!timescaleBucket?.gapfill
 
   const moveUp = (idx: number) => {
     if (idx === 0) return
@@ -368,6 +409,22 @@ export function SelectColumnsPanel() {
     setTimeDimCol('')
   }
 
+  const addStOneAgg = () => {
+    if (!stOneArg1 || !stOneArg2 || !stOneAlias.trim()) return
+    const expression = `${stOneFn}(${stOneArg1}, ${stOneArg2})`
+    addColumn({
+      id: crypto.randomUUID(),
+      tableAlias: '__expr__',
+      columnName: stOneAlias.trim(),
+      alias: stOneAlias.trim(),
+      expression,
+    })
+    setStOneArg1('')
+    setStOneArg2('')
+    setStOneAlias('')
+    setShowStOneAgg(false)
+  }
+
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
@@ -380,7 +437,7 @@ export function SelectColumnsPanel() {
             variant="ghost"
             size="sm"
             className="h-6 gap-1 text-xs px-2"
-            onClick={() => { setShowExprForm(!showExprForm); setCaseOpen(false); setShowTimeDim(false) }}
+            onClick={() => { setShowExprForm(!showExprForm); setCaseOpen(false); setShowTimeDim(false); setShowStOneAgg(false) }}
           >
             <Plus className="h-3 w-3" />
             Expression
@@ -398,10 +455,19 @@ export function SelectColumnsPanel() {
             variant="ghost"
             size="sm"
             className="h-6 gap-1 text-xs px-2"
-            onClick={() => { setShowTimeDim(!showTimeDim); setShowExprForm(false) }}
+            onClick={() => { setShowTimeDim(!showTimeDim); setShowExprForm(false); setShowStOneAgg(false) }}
           >
             <Clock className="h-3 w-3" />
             Time Dim
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 gap-1 text-xs px-2"
+            onClick={() => { setShowStOneAgg(!showStOneAgg); setShowTimeDim(false); setShowExprForm(false) }}
+          >
+            <Sigma className="h-3 w-3" />
+            ST-One Agg
           </Button>
         </div>
       </div>
@@ -425,6 +491,9 @@ export function SelectColumnsPanel() {
               onRemove={() => toggleColumn(col)}
               onUpdateAlias={(alias) => updateColumn(col.id, { alias: alias || undefined })}
               onUpdateAggregate={(agg) => updateColumn(col.id, { aggregate: agg || undefined })}
+              gapfillActive={gapfillActive}
+              gapfillStrategy={(gapfillStrategies ?? []).find((g) => g.selectedColumnId === col.id)?.strategy}
+              onUpdateGapfill={(strategy) => setGapfillStrategy(col.id, strategy)}
             />
           ))
         )}
@@ -478,6 +547,94 @@ export function SelectColumnsPanel() {
                     className="h-6 text-xs flex-1"
                     disabled={!timeDimCol}
                     onClick={addTimeDim}
+                  >
+                    Add to SELECT
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Inline ST-One aggregate helper form */}
+        {showStOneAgg && (
+          <div className="rounded border bg-muted/20 p-2 space-y-2 mt-2">
+            <Label className="text-xs font-medium">ST-One aggregate helper</Label>
+            {allColumns.length === 0 ? (
+              <p className="text-xs text-muted-foreground">Add tables to the canvas first.</p>
+            ) : (
+              <>
+                <div className="space-y-1">
+                  <Label className="text-[10px] text-muted-foreground">Function</Label>
+                  <select
+                    className="w-full rounded border bg-background px-2 py-1 text-xs"
+                    value={stOneFn}
+                    onChange={(e) => { setStOneFn(e.target.value); setStOneArg1(''); setStOneArg2('') }}
+                  >
+                    {ST_ONE_AGG_FNS.map((f) => (
+                      <option key={f.value} value={f.value}>{f.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <div className="space-y-0.5">
+                    <Label className="text-[10px] text-muted-foreground">
+                      {ST_ONE_AGG_FNS.find((f) => f.value === stOneFn)?.args[0] ?? 'arg1'}
+                    </Label>
+                    <select
+                      className="w-full rounded border bg-background px-2 py-1 text-xs"
+                      value={stOneArg1}
+                      onChange={(e) => setStOneArg1(e.target.value)}
+                    >
+                      <option value="">Select…</option>
+                      {allColumns.map((c) => (
+                        <option key={c.value} value={c.value}>{c.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-0.5">
+                    <Label className="text-[10px] text-muted-foreground">
+                      {ST_ONE_AGG_FNS.find((f) => f.value === stOneFn)?.args[1] ?? 'arg2'}
+                    </Label>
+                    <select
+                      className="w-full rounded border bg-background px-2 py-1 text-xs"
+                      value={stOneArg2}
+                      onChange={(e) => setStOneArg2(e.target.value)}
+                    >
+                      <option value="">Select…</option>
+                      {allColumns.map((c) => (
+                        <option key={c.value} value={c.value}>{c.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="space-y-0.5">
+                  <Label className="text-[10px] text-muted-foreground">Alias</Label>
+                  <Input
+                    value={stOneAlias}
+                    onChange={(e) => setStOneAlias(e.target.value)}
+                    placeholder="e.g. time_run_last"
+                    className="h-7 text-xs"
+                    onKeyDown={(e) => { if (e.key === 'Enter') addStOneAgg() }}
+                  />
+                </div>
+                {stOneArg1 && stOneArg2 && (
+                  <div className="rounded bg-muted/50 border px-2 py-1">
+                    <code className="text-[10px] font-mono text-muted-foreground break-all">
+                      {stOneFn}({stOneArg1}, {stOneArg2})
+                      {stOneAlias.trim() ? ` AS ${stOneAlias.trim()}` : ''}
+                    </code>
+                  </div>
+                )}
+                <div className="flex gap-1.5">
+                  <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setShowStOneAgg(false)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-6 text-xs flex-1"
+                    disabled={!stOneArg1 || !stOneArg2 || !stOneAlias.trim()}
+                    onClick={addStOneAgg}
                   >
                     Add to SELECT
                   </Button>
