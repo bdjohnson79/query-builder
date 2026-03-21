@@ -141,17 +141,60 @@ function buildRawSql(state: QueryState): string {
     }
   }
 
-  // JOINs
-  for (const join of joins) {
-    const rightTable = tables.find(t => t.alias === join.rightTableAlias)
-    if (!rightTable) continue
-    const joinKeyword = joinTypeToSql(join.type)
-    const rightRef = tableRef(rightTable.schemaName, rightTable.tableName, omitSchema)
-    const rightAs = rightTable.alias !== rightTable.tableName ? ` AS ${qi(rightTable.alias)}` : ''
-    // Column references use alias if set, otherwise table name
-    const leftCol = `${qi(join.leftTableAlias)}.${qi(join.leftColumn)}`
-    const rightCol = `${qi(join.rightTableAlias)}.${qi(join.rightColumn)}`
-    parts.push(`${joinKeyword} ${rightRef}${rightAs} ON ${leftCol} = ${rightCol}`)
+  // JOINs — topological resolution
+  // A JoinDef records which two columns are connected, but the canvas lets users draw the
+  // arrow in either direction. We must determine which side is the "new" table being
+  // introduced at each step and emit: JOIN <newTable> ON <inScopeCol> = <newTableCol>.
+  {
+    const inScope = new Set<string>([primaryTable.alias])
+    const pending = [...joins]
+
+    let safetyLimit = joins.length * joins.length + 1
+    while (pending.length > 0 && safetyLimit-- > 0) {
+      // Find a join where at least one side is already in scope
+      const idx = pending.findIndex(
+        (j) => inScope.has(j.leftTableAlias) || inScope.has(j.rightTableAlias)
+      )
+      if (idx === -1) {
+        // Disconnected subgraph — emit remaining joins as-is (will produce a cross join)
+        for (const j of pending) {
+          const newTable = tables.find((t) => t.alias === j.rightTableAlias)
+          if (!newTable) continue
+          const joinKeyword = joinTypeToSql(j.type)
+          const newRef = tableRef(newTable.schemaName, newTable.tableName, omitSchema)
+          const newAs = newTable.alias !== newTable.tableName ? ` AS ${qi(newTable.alias)}` : ''
+          parts.push(
+            `${joinKeyword} ${newRef}${newAs} ON ${qi(j.leftTableAlias)}.${qi(j.leftColumn)} = ${qi(j.rightTableAlias)}.${qi(j.rightColumn)}`
+          )
+          inScope.add(j.rightTableAlias)
+        }
+        break
+      }
+
+      const j = pending.splice(idx, 1)[0]
+
+      // Determine which side is "new" (not yet in scope)
+      const rightIsNew = !inScope.has(j.rightTableAlias)
+      const newAlias = rightIsNew ? j.rightTableAlias : j.leftTableAlias
+      inScope.add(newAlias)
+
+      const newTable = tables.find((t) => t.alias === newAlias)
+      if (!newTable) continue
+
+      const joinKeyword = joinTypeToSql(j.type)
+      const newRef = tableRef(newTable.schemaName, newTable.tableName, omitSchema)
+      const newAs = newTable.alias !== newTable.tableName ? ` AS ${qi(newTable.alias)}` : ''
+
+      // ON clause: in-scope side = new-table side
+      const onLeft = rightIsNew
+        ? `${qi(j.leftTableAlias)}.${qi(j.leftColumn)}`
+        : `${qi(j.rightTableAlias)}.${qi(j.rightColumn)}`
+      const onRight = rightIsNew
+        ? `${qi(j.rightTableAlias)}.${qi(j.rightColumn)}`
+        : `${qi(j.leftTableAlias)}.${qi(j.leftColumn)}`
+
+      parts.push(`${joinKeyword} ${newRef}${newAs} ON ${onLeft} = ${onRight}`)
+    }
   }
 
   // WHERE

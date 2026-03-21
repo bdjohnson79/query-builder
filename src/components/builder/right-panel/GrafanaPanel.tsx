@@ -118,6 +118,8 @@ function TimeAxisSection() {
   const setTimeColumn  = useQueryStore((s) => s.setTimeColumn)
   const orderBy        = useQueryStore((s) => s.queryState.orderBy)
   const setOrderBy     = useQueryStore((s) => s.setOrderBy)
+  const where          = useQueryStore((s) => s.queryState.where)
+  const setWhere       = useQueryStore((s) => s.setWhere)
 
   const timestampCols = tables.flatMap((t) =>
     t.columns
@@ -140,6 +142,27 @@ function TimeAxisSection() {
   const addOrderBy = () => {
     if (!timeColumn || hasOrderBy) return
     setOrderBy([...orderBy, { tableAlias: timeColumn.tableAlias, columnName: timeColumn.columnName, direction: 'ASC' }])
+  }
+
+  const timeFilterField = timeColumn
+    ? `${timeColumn.tableAlias}.${timeColumn.columnName}`
+    : null
+
+  const hasTimeFilter = timeFilterField
+    ? where.rules.some(
+        (r) => !('rules' in r) && r.operator === '$__timeFilter' && r.field === timeFilterField
+      )
+    : false
+
+  const addTimeFilter = () => {
+    if (!timeFilterField || hasTimeFilter) return
+    setWhere({
+      ...where,
+      rules: [
+        ...where.rules,
+        { id: crypto.randomUUID(), field: timeFilterField, operator: '$__timeFilter', value: '' },
+      ],
+    })
   }
 
   const timeFilterMacro = timeColumn
@@ -170,6 +193,18 @@ function TimeAxisSection() {
           <div className="flex items-center gap-1 rounded bg-white/70 border border-blue-100 px-2 py-0.5">
             <code className="flex-1 text-[11px] font-mono text-blue-700 truncate">{timeFilterMacro}</code>
             <CopyButton text={timeFilterMacro!} />
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-muted-foreground">
+              WHERE {timeFilterMacro}
+            </span>
+            <button
+              onClick={addTimeFilter}
+              disabled={hasTimeFilter}
+              className="text-[11px] text-blue-600 hover:text-blue-800 disabled:text-muted-foreground disabled:cursor-default font-medium"
+            >
+              {hasTimeFilter ? '✓ Added' : '+ Add'}
+            </button>
           </div>
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] text-muted-foreground">
