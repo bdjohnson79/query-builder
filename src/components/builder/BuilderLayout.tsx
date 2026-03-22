@@ -19,7 +19,7 @@ import { Label } from '@/components/ui/label'
 import { useQueryStore } from '@/store/queryStore'
 import { useJsonStructureStore } from '@/store/jsonStructureStore'
 import { api } from '@/lib/api/client'
-import { Save, FolderOpen, RotateCcw, Database, Copy, HelpCircle, LayoutTemplate } from 'lucide-react'
+import { Save, FolderOpen, RotateCcw, Database, Copy, HelpCircle, LayoutTemplate, ArrowLeft } from 'lucide-react'
 import type { QueryResponse } from '@/types/api'
 
 export function BuilderLayout() {
@@ -28,6 +28,9 @@ export function BuilderLayout() {
   const userEditedSql = useQueryStore((s) => s.userEditedSql)
   const loadQueryState = useQueryStore((s) => s.loadQueryState)
   const resetQuery = useQueryStore((s) => s.resetQuery)
+  const activeCteId = useQueryStore((s) => s.activeCteId)
+  const stopEditingCte = useQueryStore((s) => s.stopEditingCte)
+  const activeCte = activeCteId ? queryState.ctes.find((c) => c.id === activeCteId) : null
 
   const loadStructures = useJsonStructureStore((s) => s.loadStructures)
   useEffect(() => { loadStructures() }, [loadStructures])
@@ -131,9 +134,35 @@ export function BuilderLayout() {
             <TableLibrary />
           </div>
 
-          {/* Canvas */}
-          <div className="relative flex-1 overflow-hidden">
-            <QueryCanvas onStartTour={() => setOnboardingOpen(true)} />
+          {/* Canvas column */}
+          <div className="relative flex flex-col flex-1 overflow-hidden">
+            {/* CTE editing banner */}
+            {activeCte && (
+              <div className="flex shrink-0 items-center gap-3 border-b bg-blue-50 px-3 py-1.5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs gap-1"
+                  onClick={stopEditingCte}
+                >
+                  <ArrowLeft className="h-3 w-3" />
+                  Main query
+                </Button>
+                <span className="text-xs text-blue-700">
+                  Editing CTE: <span className="font-semibold">{activeCte.name}</span>
+                </span>
+                {activeCte.rawSql !== undefined && activeCte.rawSql !== null && (
+                  <span className="rounded bg-purple-100 text-purple-700 px-1 py-0.5 text-[10px]">
+                    Raw SQL mode — canvas inactive
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Canvas with optional blue tint overlay for CTE mode */}
+            <div className={`relative flex-1 overflow-hidden${activeCte ? ' ring-2 ring-blue-400 ring-inset' : ''}`}>
+              <QueryCanvas onStartTour={() => setOnboardingOpen(true)} />
+            </div>
           </div>
 
           {/* Right Panel */}

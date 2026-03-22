@@ -89,12 +89,21 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
     }
   }
 
+  const isCte = !!instance.cteId
+  const headerBg = isCte ? 'bg-purple-600' : 'bg-blue-600'
+  const handleColor = isCte ? '!border-purple-400' : '!border-blue-400'
+
   return (
     <div className="min-w-[140px] rounded border border-border bg-card shadow-sm">
       {/* Header */}
-      <div className="flex items-center justify-between rounded-t bg-blue-600 px-2 py-1 text-white">
+      <div className={`flex items-center justify-between rounded-t ${headerBg} px-2 py-1 text-white`}>
         <div className="min-w-0">
-          <div className="truncate font-semibold text-[10px]">{instance.tableName}</div>
+          <div className="flex items-center gap-1">
+            <div className="truncate font-semibold text-[10px]">{instance.tableName}</div>
+            {isCte && (
+              <span className="rounded bg-white/20 px-0.5 text-[7px] font-semibold shrink-0">CTE</span>
+            )}
+          </div>
           {editingAlias ? (
             <input
               autoFocus
@@ -125,7 +134,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
       {/* Columns */}
       <div className="divide-y divide-border">
         {instance.columns.map((col) => {
-          const isJsonb = col.pgType === 'jsonb' || col.pgType === 'json'
+          const isJsonb = !isCte && (col.pgType === 'jsonb' || col.pgType === 'json')
           const mapping = isJsonb
             ? jsonbMappings.find((m) => m.tableAlias === instance.alias && m.columnName === col.name)
             : undefined
@@ -148,7 +157,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
                   type="target"
                   position={Position.Left}
                   id={`${instance.alias}__${col.name}__target`}
-                  className="!h-1.5 !w-1.5 !border-blue-400 !bg-white"
+                  className={`!h-1.5 !w-1.5 ${handleColor} !bg-white`}
                 />
 
                 <Checkbox
@@ -193,7 +202,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
                   type="source"
                   position={Position.Right}
                   id={`${instance.alias}__${col.name}__source`}
-                  className="!h-1.5 !w-1.5 !border-blue-400 !bg-white"
+                  className={`!h-1.5 !w-1.5 ${handleColor} !bg-white`}
                 />
               </div>
 

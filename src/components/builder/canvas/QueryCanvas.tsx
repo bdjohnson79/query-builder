@@ -16,7 +16,7 @@ import { useDndMonitor, useDroppable } from '@dnd-kit/core'
 import { useQueryStore } from '@/store/queryStore'
 import { TableNode } from './TableNode'
 import { JoinEdge } from './JoinEdge'
-import type { TableInstance, JoinDef } from '@/types/query'
+import type { TableInstance, JoinDef, CTEDef } from '@/types/query'
 import type { AppTable, AppColumn, AppSchema } from '@/types/schema'
 import { cn } from '@/lib/utils'
 import { CanvasEmptyState } from './CanvasEmptyState'
@@ -52,7 +52,12 @@ interface QueryCanvasProps {
 }
 
 export function QueryCanvas({ onStartTour }: QueryCanvasProps) {
-  const queryState = useQueryStore((s) => s.queryState)
+  const rootQueryState = useQueryStore((s) => s.queryState)
+  const activeCteId = useQueryStore((s) => s.activeCteId)
+  // When editing a CTE, operate on that CTE's queryState; else root
+  const queryState = activeCteId
+    ? (rootQueryState.ctes.find((c) => c.id === activeCteId)?.queryState ?? rootQueryState)
+    : rootQueryState
   const addTable = useQueryStore((s) => s.addTable)
   const updateTablePosition = useQueryStore((s) => s.updateTablePosition)
   const addJoin = useQueryStore((s) => s.addJoin)
@@ -112,35 +117,69 @@ export function QueryCanvas({ onStartTour }: QueryCanvasProps) {
     onDragEnd(event) {
       const { active, over } = event
       if (over?.id !== 'canvas') return
-      if (active.data.current?.type !== 'table') return
 
-      const { table, schema, columns } = active.data.current as {
-        table: AppTable
-        schema: AppSchema
-        columns: AppColumn[]
-      }
+      const dropType = active.data.current?.type
 
-      // Default alias = table name; append _2, _3 … only on collision
-      const existing = new Set(queryState.tables.map((t) => t.alias))
-      let alias = table.name
-      let counter = 2
-      while (existing.has(alias)) alias = `${table.name}_${counter++}`
-      const instance: TableInstance = {
-        id: crypto.randomUUID(),
-        tableId: table.id,
-        tableName: table.name,
-        schemaName: schema.name,
-        alias,
-        position: { x: 100 + queryState.tables.length * 280, y: 100 },
-        columns: columns.map((c) => ({
-          id: c.id,
-          name: c.name,
-          pgType: c.pgType,
-          isNullable: c.isNullable,
-          isPrimaryKey: c.isPrimaryKey,
-        })),
+      if (dropType === 'table') {
+        const { table, schema, columns } = active.data.current as {
+          table: AppTable
+          schema: AppSchema
+          columns: AppColumn[]
+        }
+        const existing = new Set(queryState.tables.map((t) => t.alias))
+        let alias = table.name
+        let counter = 2
+        while (existing.has(alias)) alias = `${table.name}_${counter++}`
+        const instance: TableInstance = {
+          id: crypto.randomUUID(),
+          tableId: table.id,
+          tableName: table.name,
+          schemaName: schema.name,
+          alias,
+          position: { x: 100 + queryState.tables.length * 280, y: 100 },
+          columns: columns.map((c) => ({
+            id: c.id,
+            name: c.name,
+            pgType: c.pgType,
+            isNullable: c.isNullable,
+            isPrimaryKey: c.isPrimaryKey,
+          })),
+        }
+        addTable(instance)
+      } else if (dropType === 'cte') {
+        const { cte } = active.data.current as { cte: CTEDef }
+        const existing = new Set(queryState.tables.map((t) => t.alias))
+        let alias = cte.name
+        let counter = 2
+        while (existing.has(alias)) alias = `${cte.name}_${counter++}`
+        // Derive columns: for raw SQL CTEs use outputColumns; for visual CTEs derive from selectedColumns
+        const cteColumns = cte.rawSql !== undefined && cte.rawSql !== null
+          ? (cte.outputColumns ?? []).map((col, idx) => ({
+              id: idx,
+              name: col.name,
+              pgType: col.pgType,
+              isNullable: true,
+              isPrimaryKey: false,
+            }))
+          : cte.queryState.selectedColumns.map((sc, idx) => ({
+              id: idx,
+              name: sc.alias ?? sc.columnName,
+              pgType: 'text', // type unknown for visual CTEs without schema introspection
+              isNullable: true,
+              isPrimaryKey: false,
+            }))
+        const instance: TableInstance = {
+          id: crypto.randomUUID(),
+          tableId: 0,
+          tableName: cte.name,
+          schemaName: '',
+          alias,
+          cteId: cte.id,
+          position: { x: 100 + queryState.tables.length * 280, y: 100 },
+          columns: cteColumns,
+        }
+        addTable(instance)
       }
-      addTable(instance)
     },
   })
 

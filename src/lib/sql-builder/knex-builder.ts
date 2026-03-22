@@ -76,8 +76,10 @@ function qi(name: string): string {
   return name
 }
 
-/** Build a table reference, omitting schema prefix when all tables share one schema. */
+/** Build a table reference, omitting schema prefix when all tables share one schema.
+ *  CTE virtual tables have schemaName === '' and always emit just the table name. */
 function tableRef(schemaName: string, tableName: string, omitSchema: boolean): string {
+  if (!schemaName) return qi(tableName)
   return omitSchema ? qi(tableName) : `${qi(schemaName)}.${qi(tableName)}`
 }
 
@@ -85,14 +87,14 @@ function tableRef(schemaName: string, tableName: string, omitSchema: boolean): s
 // Core builder (pure TypeScript, no native deps)
 // ---------------------------------------------------------------------------
 
-function buildRawSql(state: QueryState): string {
-  const { tables, joins, selectedColumns, where, groupBy, having, orderBy, limit, offset, distinct, windowFunctions, ctes, timescaleBucket, gapfillStrategies } = state
+function buildRawSql(state: QueryState, omitTrailer = false): string {
+  const { tables, joins, selectedColumns, where, groupBy, having, orderBy, limit, offset, distinct, windowFunctions, ctes, timescaleBucket, gapfillStrategies, unionAllRawSql } = state
 
   if (tables.length === 0) return '-- Drag a table onto the canvas to start'
 
-  // Omit schema prefix when every table in the query belongs to the same schema
-  const schemas = new Set(tables.map(t => t.schemaName))
-  const omitSchema = schemas.size === 1
+  // Omit schema prefix when every non-CTE table in the query belongs to the same schema
+  const schemas = new Set(tables.map(t => t.schemaName).filter(s => s !== ''))
+  const omitSchema = schemas.size <= 1
 
   const parts: string[] = []
 
@@ -165,9 +167,10 @@ function buildRawSql(state: QueryState): string {
           const joinKeyword = joinTypeToSql(j.type)
           const newRef = tableRef(newTable.schemaName, newTable.tableName, omitSchema)
           const newAs = newTable.alias !== newTable.tableName ? ` AS ${qi(newTable.alias)}` : ''
-          parts.push(
-            `${joinKeyword} ${newRef}${newAs} ON ${qi(j.leftTableAlias)}.${qi(j.leftColumn)} = ${qi(j.rightTableAlias)}.${qi(j.rightColumn)}`
-          )
+          const fallbackOn = j.onExpression?.trim()
+            ? j.onExpression.trim()
+            : `${qi(j.leftTableAlias)}.${qi(j.leftColumn)} = ${qi(j.rightTableAlias)}.${qi(j.rightColumn)}`
+          parts.push(`${joinKeyword} ${newRef}${newAs} ON ${fallbackOn}`)
           inScope.add(j.rightTableAlias)
         }
         break
@@ -195,7 +198,8 @@ function buildRawSql(state: QueryState): string {
         ? `${qi(j.rightTableAlias)}.${qi(j.rightColumn)}`
         : `${qi(j.leftTableAlias)}.${qi(j.leftColumn)}`
 
-      parts.push(`${joinKeyword} ${newRef}${newAs} ON ${onLeft} = ${onRight}`)
+      const onClause = j.onExpression?.trim() ? j.onExpression.trim() : `${onLeft} = ${onRight}`
+      parts.push(`${joinKeyword} ${newRef}${newAs} ON ${onClause}`)
     }
   }
 
@@ -223,17 +227,25 @@ function buildRawSql(state: QueryState): string {
     if (expr) parts.push(`HAVING ${expr}`)
   }
 
-  // ORDER BY
+  const body = parts.join('\n')
+
+  // Collect trailing ORDER BY / LIMIT / OFFSET separately so UNION ALL can push them to the end
+  const trailer: string[] = []
   if (orderBy.length > 0) {
     const items = orderBy.map(ob => buildOrderByItem(ob)).join(', ')
-    parts.push(`ORDER BY ${items}`)
+    trailer.push(`ORDER BY ${items}`)
+  }
+  if (limit !== null)  trailer.push(`LIMIT ${limit}`)
+  if (offset !== null) trailer.push(`OFFSET ${offset}`)
+
+  // UNION ALL branch — append before the trailer so ORDER BY covers both branches
+  if (unionAllRawSql?.trim()) {
+    const trailerStr = trailer.length > 0 ? '\n' + trailer.join('\n') : ''
+    return body + '\nUNION ALL\n' + unionAllRawSql.trim() + trailerStr
   }
 
-  // LIMIT / OFFSET
-  if (limit !== null) parts.push(`LIMIT ${limit}`)
-  if (offset !== null) parts.push(`OFFSET ${offset}`)
-
-  return parts.join('\n')
+  if (omitTrailer) return body
+  return trailer.length > 0 ? body + '\n' + trailer.join('\n') : body
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +473,6 @@ function buildOrderByItem(ob: OrderByItem): string {
 // ---------------------------------------------------------------------------
 
 function buildCteFragment(cte: CTEDef): string {
-  const innerSql = buildRawSql(cte.queryState)
+  const innerSql = cte.rawSql?.trim() ?? buildRawSql(cte.queryState)
   return `${qi(cte.name)} AS (\n${innerSql}\n)`
 }

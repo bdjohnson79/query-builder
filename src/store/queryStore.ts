@@ -27,6 +27,11 @@ interface QueryStore {
   generatedSql: string
   userEditedSql: string | null
 
+  // CTE editing mode (UI state — not persisted)
+  activeCteId: string | null
+  startEditingCte: (id: string) => void
+  stopEditingCte: () => void
+
   // Table actions
   addTable: (table: TableInstance) => void
   removeTable: (instanceId: string) => void
@@ -63,6 +68,9 @@ interface QueryStore {
   updateCte: (id: string, updates: Partial<CTEDef>) => void
   removeCte: (id: string) => void
 
+  // UNION ALL raw SQL branch
+  setUnionAllRawSql: (sql: string | undefined) => void
+
   // JSONB mappings (structure assignments)
   setJsonbMapping: (tableAlias: string, columnName: string, structureId: number) => void
   clearJsonbMapping: (tableAlias: string, columnName: string) => void
@@ -97,64 +105,103 @@ function rebuildSql(state: QueryState): string {
   return buildSql(state)
 }
 
+// ---------------------------------------------------------------------------
+// CTE editing mode helpers
+// When activeCteId is set, all query mutations operate on the CTE's queryState
+// rather than the root queryState. The SQL preview always shows the full query.
+// ---------------------------------------------------------------------------
+
+function getActiveQueryState(s: QueryStore): QueryState {
+  if (s.activeCteId) {
+    const cte = s.queryState.ctes.find((c) => c.id === s.activeCteId)
+    if (cte) return cte.queryState
+  }
+  return s.queryState
+}
+
+function setActiveQueryState(s: QueryStore, next: QueryState): Partial<QueryStore> {
+  if (s.activeCteId) {
+    const updatedCtes = s.queryState.ctes.map((c) =>
+      c.id === s.activeCteId ? { ...c, queryState: next } : c
+    )
+    const updatedRoot = { ...s.queryState, ctes: updatedCtes }
+    return { queryState: updatedRoot, generatedSql: rebuildSql(updatedRoot) }
+  }
+  return { queryState: next, generatedSql: rebuildSql(next) }
+}
+
 export const useQueryStore = create<QueryStore>()(
   persist(
   subscribeWithSelector((set, get) => ({
     queryState: emptyQueryState(),
     generatedSql: '-- Drag a table onto the canvas to start',
     userEditedSql: null,
+    activeCteId: null,
+
+    startEditingCte: (id) => set({ activeCteId: id, userEditedSql: null }),
+    stopEditingCte: () => set({ activeCteId: null }),
 
     addTable: (table) =>
       set((s) => {
-        const next = { ...s.queryState, tables: [...s.queryState.tables, table] }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, tables: [...active.tables, table] }
+        return setActiveQueryState(s, next)
       }),
 
     removeTable: (instanceId) =>
       set((s) => {
-        const alias = s.queryState.tables.find(t => t.id === instanceId)?.alias
-        // Find expansion aliases that belong to this table so we can clean up their selectedColumns
+        const active = getActiveQueryState(s)
+        const alias = active.tables.find(t => t.id === instanceId)?.alias
         const expansionAliases = alias
-          ? s.queryState.jsonbExpansions
+          ? active.jsonbExpansions
               .filter((e) => e.tableAlias === alias)
               .map((e) => e.expandAlias)
           : []
         const next: QueryState = {
-          ...s.queryState,
-          tables: s.queryState.tables.filter((t) => t.id !== instanceId),
-          joins: s.queryState.joins.filter(
+          ...active,
+          tables: active.tables.filter((t) => t.id !== instanceId),
+          joins: active.joins.filter(
             (j) => j.leftTableAlias !== alias && j.rightTableAlias !== alias
           ),
-          selectedColumns: s.queryState.selectedColumns.filter(
+          selectedColumns: active.selectedColumns.filter(
             (c) => c.tableAlias !== alias && !expansionAliases.includes(c.tableAlias)
           ),
-          jsonbExpansions: s.queryState.jsonbExpansions.filter(
+          jsonbExpansions: active.jsonbExpansions.filter(
             (e) => e.tableAlias !== alias
           ),
-          jsonbArrayUnnestings: (s.queryState.jsonbArrayUnnestings ?? []).filter(
+          jsonbArrayUnnestings: (active.jsonbArrayUnnestings ?? []).filter(
             (u) => u.tableAlias !== alias
           ),
-          jsonbMappings: s.queryState.jsonbMappings.filter(
+          jsonbMappings: active.jsonbMappings.filter(
             (m) => m.tableAlias !== alias
           ),
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     updateTablePosition: (instanceId, position) =>
       set((s) => {
+        const active = getActiveQueryState(s)
         const next = {
-          ...s.queryState,
-          tables: s.queryState.tables.map((t) =>
+          ...active,
+          tables: active.tables.map((t) =>
             t.id === instanceId ? { ...t, position } : t
           ),
+        }
+        // Position updates don't affect SQL — only update queryState, skip rebuildSql
+        if (s.activeCteId) {
+          const updatedCtes = s.queryState.ctes.map((c) =>
+            c.id === s.activeCteId ? { ...c, queryState: next } : c
+          )
+          return { queryState: { ...s.queryState, ctes: updatedCtes } }
         }
         return { queryState: next }
       }),
 
     updateTableAlias: (instanceId, newAlias) =>
       set((s) => {
-        const table = s.queryState.tables.find((t) => t.id === instanceId)
+        const active = getActiveQueryState(s)
+        const table = active.tables.find((t) => t.id === instanceId)
         if (!table || table.alias === newAlias) return s
         const old = table.alias
         const renameFilter = (group: FilterGroup): FilterGroup => ({
@@ -168,25 +215,25 @@ export const useQueryStore = create<QueryStore>()(
           }),
         })
         const next: QueryState = {
-          ...s.queryState,
-          tables: s.queryState.tables.map((t) =>
+          ...active,
+          tables: active.tables.map((t) =>
             t.id === instanceId ? { ...t, alias: newAlias } : t
           ),
-          joins: s.queryState.joins.map((j) => ({
+          joins: active.joins.map((j) => ({
             ...j,
             leftTableAlias: j.leftTableAlias === old ? newAlias : j.leftTableAlias,
             rightTableAlias: j.rightTableAlias === old ? newAlias : j.rightTableAlias,
           })),
-          selectedColumns: s.queryState.selectedColumns.map((c) =>
+          selectedColumns: active.selectedColumns.map((c) =>
             c.tableAlias === old ? { ...c, tableAlias: newAlias } : c
           ),
-          groupBy: s.queryState.groupBy.map((g) =>
+          groupBy: active.groupBy.map((g) =>
             g.tableAlias === old ? { ...g, tableAlias: newAlias } : g
           ),
-          orderBy: s.queryState.orderBy.map((o) =>
+          orderBy: active.orderBy.map((o) =>
             o.tableAlias === old ? { ...o, tableAlias: newAlias } : o
           ),
-          windowFunctions: s.queryState.windowFunctions.map((wf) => ({
+          windowFunctions: active.windowFunctions.map((wf) => ({
             ...wf,
             partitionBy: wf.partitionBy.map((p) =>
               p.tableAlias === old ? { ...p, tableAlias: newAlias } : p
@@ -195,150 +242,168 @@ export const useQueryStore = create<QueryStore>()(
               o.tableAlias === old ? { ...o, tableAlias: newAlias } : o
             ),
           })),
-          where: renameFilter(s.queryState.where),
-          having: renameFilter(s.queryState.having),
-          jsonbMappings: s.queryState.jsonbMappings.map((m) =>
+          where: renameFilter(active.where),
+          having: renameFilter(active.having),
+          jsonbMappings: active.jsonbMappings.map((m) =>
             m.tableAlias === old ? { ...m, tableAlias: newAlias } : m
           ),
-          jsonbExpansions: s.queryState.jsonbExpansions.map((e) =>
+          jsonbExpansions: active.jsonbExpansions.map((e) =>
             e.tableAlias === old ? { ...e, tableAlias: newAlias } : e
           ),
-          jsonbArrayUnnestings: (s.queryState.jsonbArrayUnnestings ?? []).map((u) =>
+          jsonbArrayUnnestings: (active.jsonbArrayUnnestings ?? []).map((u) =>
             u.tableAlias === old ? { ...u, tableAlias: newAlias } : u
           ),
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     addJoin: (join) =>
       set((s) => {
-        const next = { ...s.queryState, joins: [...s.queryState.joins, join] }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, joins: [...active.joins, join] }
+        return setActiveQueryState(s, next)
       }),
 
     updateJoin: (id, updates) =>
       set((s) => {
+        const active = getActiveQueryState(s)
         const next = {
-          ...s.queryState,
-          joins: s.queryState.joins.map((j) => (j.id === id ? { ...j, ...updates } : j)),
+          ...active,
+          joins: active.joins.map((j) => (j.id === id ? { ...j, ...updates } : j)),
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     removeJoin: (id) =>
       set((s) => {
-        const next = { ...s.queryState, joins: s.queryState.joins.filter((j) => j.id !== id) }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, joins: active.joins.filter((j) => j.id !== id) }
+        return setActiveQueryState(s, next)
       }),
 
     toggleColumn: (col) =>
       set((s) => {
-        const exists = s.queryState.selectedColumns.find(
+        const active = getActiveQueryState(s)
+        const exists = active.selectedColumns.find(
           (c) => c.tableAlias === col.tableAlias && c.columnName === col.columnName
         )
         const next = {
-          ...s.queryState,
+          ...active,
           selectedColumns: exists
-            ? s.queryState.selectedColumns.filter((c) => c.id !== exists.id)
-            : [...s.queryState.selectedColumns, col],
+            ? active.selectedColumns.filter((c) => c.id !== exists.id)
+            : [...active.selectedColumns, col],
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     updateColumn: (id, updates) =>
       set((s) => {
+        const active = getActiveQueryState(s)
         const next = {
-          ...s.queryState,
-          selectedColumns: s.queryState.selectedColumns.map((c) =>
+          ...active,
+          selectedColumns: active.selectedColumns.map((c) =>
             c.id === id ? { ...c, ...updates } : c
           ),
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     reorderColumns: (columns) =>
       set((s) => {
-        const next = { ...s.queryState, selectedColumns: columns }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, selectedColumns: columns }
+        return setActiveQueryState(s, next)
       }),
 
     addColumn: (col) =>
       set((s) => {
+        const active = getActiveQueryState(s)
         const next = {
-          ...s.queryState,
-          selectedColumns: [...s.queryState.selectedColumns, col],
+          ...active,
+          selectedColumns: [...active.selectedColumns, col],
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     setDistinct: (val) =>
       set((s) => {
-        const next = { ...s.queryState, distinct: val }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, distinct: val }
+        return setActiveQueryState(s, next)
       }),
 
     setWhere: (group) =>
       set((s) => {
-        const next = { ...s.queryState, where: group }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, where: group }
+        return setActiveQueryState(s, next)
       }),
 
     setGroupBy: (cols) =>
       set((s) => {
-        const next = { ...s.queryState, groupBy: cols }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, groupBy: cols }
+        return setActiveQueryState(s, next)
       }),
 
     setHaving: (group) =>
       set((s) => {
-        const next = { ...s.queryState, having: group }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, having: group }
+        return setActiveQueryState(s, next)
       }),
 
     setOrderBy: (items) =>
       set((s) => {
-        const next = { ...s.queryState, orderBy: items }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, orderBy: items }
+        return setActiveQueryState(s, next)
       }),
 
     setLimit: (val) =>
       set((s) => {
-        const next = { ...s.queryState, limit: val }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, limit: val }
+        return setActiveQueryState(s, next)
       }),
 
     setOffset: (val) =>
       set((s) => {
-        const next = { ...s.queryState, offset: val }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, offset: val }
+        return setActiveQueryState(s, next)
       }),
 
     addWindowFunction: (wf) =>
       set((s) => {
-        const next = { ...s.queryState, windowFunctions: [...s.queryState.windowFunctions, wf] }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, windowFunctions: [...active.windowFunctions, wf] }
+        return setActiveQueryState(s, next)
       }),
 
     updateWindowFunction: (id, updates) =>
       set((s) => {
+        const active = getActiveQueryState(s)
         const next = {
-          ...s.queryState,
-          windowFunctions: s.queryState.windowFunctions.map((w) =>
+          ...active,
+          windowFunctions: active.windowFunctions.map((w) =>
             w.id === id ? { ...w, ...updates } : w
           ),
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     removeWindowFunction: (id) =>
       set((s) => {
+        const active = getActiveQueryState(s)
         const next = {
-          ...s.queryState,
-          windowFunctions: s.queryState.windowFunctions.filter((w) => w.id !== id),
+          ...active,
+          windowFunctions: active.windowFunctions.filter((w) => w.id !== id),
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
+    // CTEs always modify the ROOT queryState (not the active CTE's nested state)
     addCte: (cte) =>
       set((s) => {
         const next = { ...s.queryState, ctes: [...s.queryState.ctes, cte] }
@@ -357,56 +422,60 @@ export const useQueryStore = create<QueryStore>()(
     removeCte: (id) =>
       set((s) => {
         const next = { ...s.queryState, ctes: s.queryState.ctes.filter((c) => c.id !== id) }
+        return { queryState: next, generatedSql: rebuildSql(next), activeCteId: s.activeCteId === id ? null : s.activeCteId }
+      }),
+
+    setUnionAllRawSql: (sql) =>
+      set((s) => {
+        const next = { ...s.queryState, unionAllRawSql: sql }
         return { queryState: next, generatedSql: rebuildSql(next) }
       }),
 
     setJsonbMapping: (tableAlias, columnName, structureId) =>
       set((s) => {
-        const filtered = s.queryState.jsonbMappings.filter(
+        const active = getActiveQueryState(s)
+        const filtered = active.jsonbMappings.filter(
           (m) => !(m.tableAlias === tableAlias && m.columnName === columnName)
         )
         const next: QueryState = {
-          ...s.queryState,
+          ...active,
           jsonbMappings: [...filtered, { tableAlias, columnName, structureId } as JsonbMapping],
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     clearJsonbMapping: (tableAlias, columnName) =>
       set((s) => {
+        const active = getActiveQueryState(s)
         const next: QueryState = {
-          ...s.queryState,
-          jsonbMappings: s.queryState.jsonbMappings.filter(
+          ...active,
+          jsonbMappings: active.jsonbMappings.filter(
             (m) => !(m.tableAlias === tableAlias && m.columnName === columnName)
           ),
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     applyJsonbExpansion: (exp, selectedFieldNames) =>
       set((s) => {
-        // Find existing expansion for this table.column to get old expandAlias
-        const existing = s.queryState.jsonbExpansions.find(
+        const active = getActiveQueryState(s)
+        const existing = active.jsonbExpansions.find(
           (e) => e.tableAlias === exp.tableAlias && e.columnName === exp.columnName
         )
         const oldExpandAlias = existing?.expandAlias
 
-        // Remove old expansion entry
-        const expansions = s.queryState.jsonbExpansions.filter(
+        const expansions = active.jsonbExpansions.filter(
           (e) => !(e.tableAlias === exp.tableAlias && e.columnName === exp.columnName)
         )
 
-        // Remove SelectedColumns that came from the old expansion alias
-        let selectedColumns = s.queryState.selectedColumns
+        let selectedColumns = active.selectedColumns
         if (oldExpandAlias) {
           selectedColumns = selectedColumns.filter((c) => c.tableAlias !== oldExpandAlias)
         }
-        // Also clean up new expandAlias if it differs (alias rename case)
         if (exp.expandAlias !== oldExpandAlias) {
           selectedColumns = selectedColumns.filter((c) => c.tableAlias !== exp.expandAlias)
         }
 
-        // Add SelectedColumns for each checked field
         const newCols: SelectedColumn[] = selectedFieldNames
           .filter((name) => exp.fields.some((f) => f.name === name))
           .map((name) => ({
@@ -417,106 +486,115 @@ export const useQueryStore = create<QueryStore>()(
         selectedColumns = [...selectedColumns, ...newCols]
 
         const next: QueryState = {
-          ...s.queryState,
+          ...active,
           jsonbExpansions: [...expansions, exp],
           selectedColumns,
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     removeJsonbExpansion: (id) =>
       set((s) => {
-        const exp = s.queryState.jsonbExpansions.find((e) => e.id === id)
+        const active = getActiveQueryState(s)
+        const exp = active.jsonbExpansions.find((e) => e.id === id)
         const next: QueryState = {
-          ...s.queryState,
-          jsonbExpansions: s.queryState.jsonbExpansions.filter((e) => e.id !== id),
-          // Remove selected columns that came from this expansion
+          ...active,
+          jsonbExpansions: active.jsonbExpansions.filter((e) => e.id !== id),
           selectedColumns: exp
-            ? s.queryState.selectedColumns.filter((c) => c.tableAlias !== exp.expandAlias)
-            : s.queryState.selectedColumns,
+            ? active.selectedColumns.filter((c) => c.tableAlias !== exp.expandAlias)
+            : active.selectedColumns,
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     addJsonbArrayUnnesting: (unnesting) =>
       set((s) => {
+        const active = getActiveQueryState(s)
         const next: QueryState = {
-          ...s.queryState,
-          jsonbArrayUnnestings: [...(s.queryState.jsonbArrayUnnestings ?? []), unnesting],
+          ...active,
+          jsonbArrayUnnestings: [...(active.jsonbArrayUnnestings ?? []), unnesting],
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     updateJsonbArrayUnnesting: (id, updates) =>
       set((s) => {
+        const active = getActiveQueryState(s)
         const next: QueryState = {
-          ...s.queryState,
-          jsonbArrayUnnestings: (s.queryState.jsonbArrayUnnestings ?? []).map((u) =>
+          ...active,
+          jsonbArrayUnnestings: (active.jsonbArrayUnnestings ?? []).map((u) =>
             u.id === id ? { ...u, ...updates } : u
           ),
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     removeJsonbArrayUnnesting: (id) =>
       set((s) => {
+        const active = getActiveQueryState(s)
         const next: QueryState = {
-          ...s.queryState,
-          jsonbArrayUnnestings: (s.queryState.jsonbArrayUnnestings ?? []).filter(
+          ...active,
+          jsonbArrayUnnestings: (active.jsonbArrayUnnestings ?? []).filter(
             (u) => u.id !== id
           ),
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     setPanelType: (type) =>
       set((s) => {
-        const next = { ...s.queryState, grafanaPanelType: type }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, grafanaPanelType: type }
+        return setActiveQueryState(s, next)
       }),
 
     setIsGrafanaVariable: (enabled) =>
       set((s) => {
-        const next = { ...s.queryState, isGrafanaVariable: enabled }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, isGrafanaVariable: enabled }
+        return setActiveQueryState(s, next)
       }),
 
     setTimeColumn: (col) =>
       set((s) => {
-        const next = { ...s.queryState, timeColumn: col }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, timeColumn: col }
+        return setActiveQueryState(s, next)
       }),
 
     setTimescaleBucket: (bucket) =>
       set((s) => {
-        const next = { ...s.queryState, timescaleBucket: bucket }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        const active = getActiveQueryState(s)
+        const next = { ...active, timescaleBucket: bucket }
+        return setActiveQueryState(s, next)
       }),
 
     setGapfillStrategy: (columnId, strategy) =>
       set((s) => {
-        const existing = s.queryState.gapfillStrategies ?? []
+        const active = getActiveQueryState(s)
+        const existing = active.gapfillStrategies ?? []
         const filtered = existing.filter((g) => g.selectedColumnId !== columnId)
         const next: QueryState = {
-          ...s.queryState,
+          ...active,
           gapfillStrategies: strategy
             ? [...filtered, { selectedColumnId: columnId, strategy }]
             : filtered,
         }
-        return { queryState: next, generatedSql: rebuildSql(next) }
+        return setActiveQueryState(s, next)
       }),
 
     setUserEditedSql: (sql) =>
       set({ userEditedSql: sql }),
 
     loadQueryState: (state) =>
-      set({ queryState: state, generatedSql: rebuildSql(state), userEditedSql: null }),
+      set({ queryState: state, generatedSql: rebuildSql(state), userEditedSql: null, activeCteId: null }),
 
     resetQuery: () =>
       set({
         queryState: emptyQueryState(),
         generatedSql: '-- Drag a table onto the canvas to start',
         userEditedSql: null,
+        activeCteId: null,
       }),
   })),
   {
@@ -524,6 +602,7 @@ export const useQueryStore = create<QueryStore>()(
     partialize: (state) => ({
       queryState: state.queryState,
       userEditedSql: state.userEditedSql,
+      // activeCteId is UI state — not persisted
     }),
     onRehydrateStorage: () => (state) => {
       if (state?.queryState) {
@@ -533,7 +612,13 @@ export const useQueryStore = create<QueryStore>()(
         if (!state.queryState.jsonbArrayUnnestings) state.queryState.jsonbArrayUnnestings = []
         if (state.queryState.isGrafanaVariable === undefined) state.queryState.isGrafanaVariable = false
         if (!state.queryState.gapfillStrategies) state.queryState.gapfillStrategies = []
-        // timeColumn backfill: null → undefined (JSON serializes undefined as absent, null may appear)
+        // Backfill CTEDef.outputColumns for old persisted states
+        if (state.queryState.ctes) {
+          state.queryState.ctes = state.queryState.ctes.map((c) =>
+            c.outputColumns ? c : { ...c, outputColumns: [] }
+          )
+        }
+        // timeColumn backfill: null → undefined
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         if ((state.queryState as any).timeColumn === null) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any

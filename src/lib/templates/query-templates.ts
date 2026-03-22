@@ -8,6 +8,8 @@ import {
   type SelectedColumn,
   type JsonbExpansion,
   type JsonbMapping,
+  type CTEDef,
+  type CteOutputColumn,
 } from '@/types/query'
 
 export interface QueryTemplate {
@@ -91,71 +93,6 @@ LEFT JOIN LATERAL (
 WHERE e2.value IS NOT NULL
 ORDER BY 1,2`
 
-const TAG_FILTERED_BY_STATE_SQL = `-- Define the data tag(s) that we want to know more about (totalize, value, etc)
-WITH data_tags AS (
-    SELECT name, description, location, info, labels
-    FROM tag
-    WHERE name = 'your_data_tag_here'
-),
--- Define the tag whose state determines when we want to know something about the data tag(s)
-state_tags AS (
-    SELECT name, description, location, info, labels
-    FROM tag
-    WHERE name = 'your_state_tag_here'
-),
--- Get the data events using the "standard query" as we usually do.
-data_events AS (
-    SELECT time, tag AS metric, value
-    FROM event e
-    INNER JOIN data_tags dt ON e.tag = dt.name
-    WHERE $__timeFilter("time")
-    UNION ALL
-    SELECT $__timeFrom()::timestamp AS time, dt2.name AS metric, value
-    FROM data_tags dt2
-    LEFT JOIN LATERAL (
-        SELECT time, dt2.name, value
-        FROM event
-        WHERE time BETWEEN $__timeFrom()::timestamp - INTERVAL '30d' AND $__timeFrom()::timestamp
-            AND tag = dt2.name
-        ORDER BY time DESC
-        LIMIT 1
-    ) e2 ON true
-    WHERE e2.value IS NOT NULL
-    ORDER BY 1,2
-),
--- And then do the same thing for the state events.
-state_events AS (
-    SELECT time, tag, value
-    FROM event e
-    INNER JOIN state_tags st ON e.tag = st.name
-    WHERE $__timeFilter("time")
-    UNION ALL
-    SELECT $__timeFrom()::timestamp AS time, st2.name, value
-    FROM state_tags st2
-    LEFT JOIN LATERAL (
-        SELECT time, st2.name, value
-        FROM event
-        WHERE time BETWEEN $__timeFrom()::timestamp - INTERVAL '30d' AND $__timeFrom()::timestamp
-            AND tag = st2.name
-        ORDER BY time DESC
-        LIMIT 1
-    ) e3 ON true
-    WHERE e3.value IS NOT NULL
-    ORDER BY 1,2
-),
--- Convert the state events to time ranges using the tsrange function.
-state_ranges AS (
-    SELECT tsrange(time, lead(time, 1, $__timeTo()) OVER (ORDER BY time)) AS tsrange,
-    tag, value
-    FROM state_events
-)
--- Select the data, but only from time periods where the state matches criteria.
--- Change "sr.value = 2" to whatever state value you want to filter on.
-SELECT time, de.metric, de.value
-FROM data_events de
-INNER JOIN state_ranges sr ON de.time <@ sr.tsrange AND sr.value = 2
-ORDER BY 1,2`
-
 const OEE_DATA_TABLE_SQL = `-- Change the time zone to the site's local time zone.
 -- Change the INTERVAL value to align with the start of the site's production day.
 -- The example below is for a 7:00 AM start time.
@@ -226,16 +163,10 @@ export function resolveTemplate(
 ): { queryState: QueryState; userEditedSql: string | null } | null {
   switch (id) {
     case 'standard-time-series':
-      return {
-        queryState: buildEventTagQueryState(schemaStore, 'e', 't'),
-        userEditedSql: STANDARD_TIME_SERIES_SQL,
-      }
+      return buildStandardTimeSeriesState(schemaStore)
 
     case 'tag-filtered-by-state':
-      return {
-        queryState: buildEventTagQueryState(schemaStore, 'e', 't'),
-        userEditedSql: TAG_FILTERED_BY_STATE_SQL,
-      }
+      return buildTagFilteredByStateState(schemaStore)
 
     case 'oee-data-table':
       return { queryState: buildOeeQueryState(schemaStore), userEditedSql: null }
@@ -258,27 +189,17 @@ export function resolveTemplate(
 }
 
 // ---------------------------------------------------------------------------
-// Shared builder: event + tag on canvas, standard join, time column set
-// Used by the two UNION ALL templates — the SQL can't be fully represented
-// in the builder, so userEditedSql carries the complete query, but the
-// canvas shows the core table relationships as a visual reference.
+// Helper: schema name lookup + column meta conversion
 // ---------------------------------------------------------------------------
 
-function buildEventTagQueryState(
-  schemaStore: { schemas: AppSchema[]; tables: AppTable[]; columns: Record<number, AppColumn[]> },
-  eventAlias: string,
-  tagAlias: string
-): QueryState {
-  const { schemas, tables, columns } = schemaStore
-
-  const eventTable = tables.find((t) => t.name === 'event')
-  const tagTable   = tables.find((t) => t.name === 'tag')
-
-  if (!eventTable || !tagTable) return emptyQueryState()
-
+function makeHelpers(schemaStore: {
+  schemas: AppSchema[]
+  tables: AppTable[]
+  columns: Record<number, AppColumn[]>
+}) {
+  const { schemas, columns } = schemaStore
   const getSchemaName = (schemaId: number) =>
     schemas.find((s) => s.id === schemaId)?.name ?? 'public'
-
   const toColumnMeta = (cols: AppColumn[]) =>
     cols.map((c) => ({
       id: c.id,
@@ -287,53 +208,345 @@ function buildEventTagQueryState(
       isNullable: c.isNullable,
       isPrimaryKey: c.isPrimaryKey,
     }))
+  return { getSchemaName, toColumnMeta, columns }
+}
 
-  const tableInstances: TableInstance[] = [
-    {
-      id: crypto.randomUUID(),
-      tableId: eventTable.id,
-      tableName: eventTable.name,
-      schemaName: getSchemaName(eventTable.schemaId),
-      alias: eventAlias,
-      position: { x: 0, y: 100 },
-      columns: toColumnMeta(columns[eventTable.id] ?? []),
-    },
-    {
-      id: crypto.randomUUID(),
-      tableId: tagTable.id,
-      tableName: tagTable.name,
-      schemaName: getSchemaName(tagTable.schemaId),
-      alias: tagAlias,
-      position: { x: 380, y: 100 },
-      columns: toColumnMeta(columns[tagTable.id] ?? []),
-    },
-  ]
+// ---------------------------------------------------------------------------
+// Standard time-series: tags CTE (visual) + event+tags main + unionAllRawSql
+// ---------------------------------------------------------------------------
+
+const STANDARD_LOOKBACK_SQL = `SELECT $__timeFrom()::timestamp AS time, t2.description, value
+FROM tags t2
+LEFT JOIN LATERAL (
+    SELECT time, t2.description, value
+    FROM event
+    WHERE time BETWEEN $__timeFrom()::timestamp - INTERVAL '30d' AND $__timeFrom()::timestamp
+        AND tag = t2.name
+    ORDER BY time DESC
+    LIMIT 1
+) e2 ON true
+WHERE e2.value IS NOT NULL`
+
+function buildStandardTimeSeriesState(schemaStore: {
+  schemas: AppSchema[]
+  tables: AppTable[]
+  columns: Record<number, AppColumn[]>
+}): { queryState: QueryState; userEditedSql: string | null } {
+  const { tables } = schemaStore
+  const { getSchemaName, toColumnMeta, columns } = makeHelpers(schemaStore)
+
+  const eventTable = tables.find((t) => t.name === 'event')
+  const tagTable   = tables.find((t) => t.name === 'tag')
+
+  // Fall back to raw SQL if required tables are missing
+  if (!eventTable || !tagTable) {
+    return { queryState: emptyQueryState(), userEditedSql: STANDARD_TIME_SERIES_SQL }
+  }
 
   const eventCols = columns[eventTable.id] ?? []
   const tagCols   = columns[tagTable.id] ?? []
 
-  const joins: JoinDef[] = []
-  if (eventCols.some((c) => c.name === 'tag') && tagCols.some((c) => c.name === 'name')) {
-    joins.push({
+  // ---- tags CTE (visual) ----
+  const tagsCteId = crypto.randomUUID()
+  const tagTableInstanceId = crypto.randomUUID()
+  const tagTableAlias = 'tag'
+
+  const tagsCteQueryState: QueryState = {
+    ...emptyQueryState(),
+    isSubquery: true,
+    tables: [{
+      id: tagTableInstanceId,
+      tableId: tagTable.id,
+      tableName: tagTable.name,
+      schemaName: getSchemaName(tagTable.schemaId),
+      alias: tagTableAlias,
+      position: { x: 0, y: 100 },
+      columns: toColumnMeta(tagCols),
+    }],
+    selectedColumns: (['name', 'description', 'location'] as const)
+      .filter((n) => tagCols.some((c) => c.name === n))
+      .map((n) => ({
+        id: crypto.randomUUID(),
+        tableAlias: tagTableAlias,
+        columnName: n,
+      })),
+    where: {
+      id: crypto.randomUUID(),
+      combinator: 'OR',
+      rules: [
+        { id: crypto.randomUUID(), field: `${tagTableAlias}.name`, operator: '=', value: 'your_tag_name_here' },
+        { id: crypto.randomUUID(), field: `${tagTableAlias}.name`, operator: '=', value: 'your_other_tag_here' },
+        { id: crypto.randomUUID(), field: `${tagTableAlias}.name`, operator: '=', value: 'your_tag_here' },
+      ],
+    },
+  }
+
+  const tagsOutputColumns: CteOutputColumn[] = ['name', 'description', 'location'].map((n) => ({
+    name: n,
+    pgType: tagCols.find((c) => c.name === n)?.pgType ?? 'text',
+  }))
+
+  const tagsCte: CTEDef = {
+    id: tagsCteId,
+    name: 'tags',
+    recursive: false,
+    queryState: tagsCteQueryState,
+    outputColumns: tagsOutputColumns,
+  }
+
+  // ---- Main query: event e INNER JOIN tags t ----
+  const eventInstanceId = crypto.randomUUID()
+  const tagsInstanceId  = crypto.randomUUID()
+
+  const mainTables: TableInstance[] = [
+    {
+      id: eventInstanceId,
+      tableId: eventTable.id,
+      tableName: eventTable.name,
+      schemaName: getSchemaName(eventTable.schemaId),
+      alias: 'e',
+      position: { x: 0, y: 100 },
+      columns: toColumnMeta(eventCols),
+    },
+    {
+      id: tagsInstanceId,
+      tableId: 0,
+      tableName: 'tags',
+      schemaName: '',
+      alias: 't',
+      cteId: tagsCteId,
+      position: { x: 380, y: 100 },
+      columns: tagsOutputColumns.map((c, i) => ({
+        id: i,
+        name: c.name,
+        pgType: c.pgType,
+        isNullable: true,
+        isPrimaryKey: false,
+      })),
+    },
+  ]
+
+  const mainJoins: JoinDef[] = []
+  if (eventCols.some((c) => c.name === 'tag')) {
+    mainJoins.push({
       id: crypto.randomUUID(),
       type: 'INNER',
-      leftTableAlias: eventAlias,
+      leftTableAlias: 'e',
       leftColumn: 'tag',
-      rightTableAlias: tagAlias,
+      rightTableAlias: 't',
       rightColumn: 'name',
     })
   }
 
-  // Mark the time column so Grafana tab shows suggestions
-  const hasTimeCol = eventCols.some((c) => c.name === 'time')
+  const mainSelectedColumns: SelectedColumn[] = []
+  if (eventCols.some((c) => c.name === 'time')) {
+    mainSelectedColumns.push({ id: crypto.randomUUID(), tableAlias: 'e', columnName: 'time' })
+  }
+  mainSelectedColumns.push({ id: crypto.randomUUID(), tableAlias: 't', columnName: 'description' })
+  if (eventCols.some((c) => c.name === 'value')) {
+    mainSelectedColumns.push({ id: crypto.randomUUID(), tableAlias: 'e', columnName: 'value' })
+  }
 
-  return {
+  const queryState: QueryState = {
     ...emptyQueryState(),
-    tables: tableInstances,
-    joins,
-    timeColumn: hasTimeCol ? { tableAlias: eventAlias, columnName: 'time' } : undefined,
+    ctes: [tagsCte],
+    tables: mainTables,
+    joins: mainJoins,
+    selectedColumns: mainSelectedColumns,
+    where: {
+      id: crypto.randomUUID(),
+      combinator: 'AND',
+      rules: [
+        { id: crypto.randomUUID(), field: 'e.time', operator: '$__timeFilter', value: '' },
+      ],
+    },
+    orderBy: [
+      { tableAlias: 'e', columnName: 'time', direction: 'ASC' },
+      { tableAlias: 't', columnName: 'description', direction: 'ASC' },
+    ],
+    unionAllRawSql: STANDARD_LOOKBACK_SQL,
+    timeColumn: eventCols.some((c) => c.name === 'time')
+      ? { tableAlias: 'e', columnName: 'time' }
+      : undefined,
     grafanaPanelType: 'time-series',
   }
+
+  return { queryState, userEditedSql: null }
+}
+
+// ---------------------------------------------------------------------------
+// Tag filtered by state: 5 rawSql CTEs + virtual table instances + custom ON
+// ---------------------------------------------------------------------------
+
+const DATA_TAGS_SQL = `SELECT name, description, location, info, labels
+FROM tag
+WHERE name = 'your_data_tag_here'`
+
+const STATE_TAGS_SQL = `SELECT name, description, location, info, labels
+FROM tag
+WHERE name = 'your_state_tag_here'`
+
+const DATA_EVENTS_SQL = `SELECT time, tag AS metric, value
+FROM event e
+INNER JOIN data_tags dt ON e.tag = dt.name
+WHERE $__timeFilter("time")
+UNION ALL
+SELECT $__timeFrom()::timestamp AS time, dt2.name AS metric, value
+FROM data_tags dt2
+LEFT JOIN LATERAL (
+    SELECT time, dt2.name, value
+    FROM event
+    WHERE time BETWEEN $__timeFrom()::timestamp - INTERVAL '30d' AND $__timeFrom()::timestamp
+        AND tag = dt2.name
+    ORDER BY time DESC
+    LIMIT 1
+) e2 ON true
+WHERE e2.value IS NOT NULL
+ORDER BY 1,2`
+
+const STATE_EVENTS_SQL = `SELECT time, tag, value
+FROM event e
+INNER JOIN state_tags st ON e.tag = st.name
+WHERE $__timeFilter("time")
+UNION ALL
+SELECT $__timeFrom()::timestamp AS time, st2.name, value
+FROM state_tags st2
+LEFT JOIN LATERAL (
+    SELECT time, st2.name, value
+    FROM event
+    WHERE time BETWEEN $__timeFrom()::timestamp - INTERVAL '30d' AND $__timeFrom()::timestamp
+        AND tag = st2.name
+    ORDER BY time DESC
+    LIMIT 1
+) e3 ON true
+WHERE e3.value IS NOT NULL
+ORDER BY 1,2`
+
+const STATE_RANGES_SQL = `SELECT tsrange(time, lead(time, 1, $__timeTo()) OVER (ORDER BY time)) AS tsrange,
+    tag, value
+FROM state_events`
+
+function buildTagFilteredByStateState(schemaStore: {
+  schemas: AppSchema[]
+  tables: AppTable[]
+  columns: Record<number, AppColumn[]>
+}): { queryState: QueryState; userEditedSql: string | null } {
+  const tagEventCols: CteOutputColumn[] = [
+    { name: 'name',        pgType: 'text' },
+    { name: 'description', pgType: 'text' },
+    { name: 'location',    pgType: 'text' },
+    { name: 'info',        pgType: 'jsonb' },
+    { name: 'labels',      pgType: 'jsonb' },
+  ]
+  const eventOutputCols: CteOutputColumn[] = [
+    { name: 'time',   pgType: 'timestamptz' },
+    { name: 'metric', pgType: 'text' },
+    { name: 'value',  pgType: 'float8' },
+  ]
+  const stateEventOutputCols: CteOutputColumn[] = [
+    { name: 'time',  pgType: 'timestamptz' },
+    { name: 'tag',   pgType: 'text' },
+    { name: 'value', pgType: 'float8' },
+  ]
+  const stateRangesOutputCols: CteOutputColumn[] = [
+    { name: 'tsrange', pgType: 'tsrange' },
+    { name: 'tag',     pgType: 'text' },
+    { name: 'value',   pgType: 'float8' },
+  ]
+
+  const dataTagsCteId    = crypto.randomUUID()
+  const stateTagsCteId   = crypto.randomUUID()
+  const dataEventsCteId  = crypto.randomUUID()
+  const stateEventsCteId = crypto.randomUUID()
+  const stateRangesCteId = crypto.randomUUID()
+
+  const makeCte = (
+    id: string,
+    name: string,
+    rawSql: string,
+    outputColumns: CteOutputColumn[]
+  ): CTEDef => ({
+    id,
+    name,
+    recursive: false,
+    queryState: { ...emptyQueryState(), isSubquery: true },
+    rawSql,
+    outputColumns,
+  })
+
+  const ctes: CTEDef[] = [
+    makeCte(dataTagsCteId,    'data_tags',    DATA_TAGS_SQL,    tagEventCols),
+    makeCte(stateTagsCteId,   'state_tags',   STATE_TAGS_SQL,   tagEventCols),
+    makeCte(dataEventsCteId,  'data_events',  DATA_EVENTS_SQL,  eventOutputCols),
+    makeCte(stateEventsCteId, 'state_events', STATE_EVENTS_SQL, stateEventOutputCols),
+    makeCte(stateRangesCteId, 'state_ranges', STATE_RANGES_SQL, stateRangesOutputCols),
+  ]
+
+  const toColMeta = (cols: CteOutputColumn[], startId = 0) =>
+    cols.map((c, i) => ({
+      id: startId + i,
+      name: c.name,
+      pgType: c.pgType,
+      isNullable: true,
+      isPrimaryKey: false,
+    }))
+
+  const mainTables: TableInstance[] = [
+    {
+      id: crypto.randomUUID(),
+      tableId: 0,
+      tableName: 'data_events',
+      schemaName: '',
+      alias: 'de',
+      cteId: dataEventsCteId,
+      position: { x: 0, y: 100 },
+      columns: toColMeta(eventOutputCols),
+    },
+    {
+      id: crypto.randomUUID(),
+      tableId: 0,
+      tableName: 'state_ranges',
+      schemaName: '',
+      alias: 'sr',
+      cteId: stateRangesCteId,
+      position: { x: 400, y: 100 },
+      columns: toColMeta(stateRangesOutputCols, 10),
+    },
+  ]
+
+  const mainJoins: JoinDef[] = [
+    {
+      id: crypto.randomUUID(),
+      type: 'INNER',
+      leftTableAlias: 'de',
+      leftColumn: 'time',
+      rightTableAlias: 'sr',
+      rightColumn: 'tsrange',
+      onExpression: 'de.time <@ sr.tsrange AND sr.value = 2',
+    },
+  ]
+
+  const mainSelectedColumns: SelectedColumn[] = [
+    { id: crypto.randomUUID(), tableAlias: 'de', columnName: 'time' },
+    { id: crypto.randomUUID(), tableAlias: 'de', columnName: 'metric' },
+    { id: crypto.randomUUID(), tableAlias: 'de', columnName: 'value' },
+  ]
+
+  const queryState: QueryState = {
+    ...emptyQueryState(),
+    ctes,
+    tables: mainTables,
+    joins: mainJoins,
+    selectedColumns: mainSelectedColumns,
+    orderBy: [
+      { tableAlias: 'de', columnName: 'time',   direction: 'ASC' },
+      { tableAlias: 'de', columnName: 'metric',  direction: 'ASC' },
+    ],
+    timeColumn: { tableAlias: 'de', columnName: 'time' },
+    grafanaPanelType: 'time-series',
+  }
+
+  return { queryState, userEditedSql: null }
 }
 
 // oee_1h fields exactly as they appear in the jsonb_to_record CROSS JOIN

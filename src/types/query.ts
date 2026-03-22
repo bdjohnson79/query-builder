@@ -14,12 +14,13 @@ export interface ColumnRef {
 
 export interface TableInstance {
   id: string          // unique instance id (uuid)
-  tableId: number     // references app_tables.id
+  tableId: number     // references app_tables.id (0 for CTE virtual tables)
   tableName: string
-  schemaName: string
+  schemaName: string  // '' for CTE virtual tables (no schema prefix in SQL)
   alias: string
   position: { x: number; y: number }
   columns: ColumnMeta[]
+  cteId?: string      // set when this instance is a CTE virtual table
 }
 
 export interface ColumnMeta {
@@ -37,6 +38,7 @@ export interface JoinDef {
   leftColumn: string
   rightTableAlias: string
   rightColumn: string
+  onExpression?: string  // when set, replaces the generated ON clause entirely
 }
 
 export interface SelectedColumn {
@@ -111,11 +113,18 @@ export interface FilterGroup {
   rules: (FilterRule | FilterGroup)[]
 }
 
+export interface CteOutputColumn {
+  name: string
+  pgType: string
+}
+
 export interface CTEDef {
   id: string
   name: string
   recursive: boolean
   queryState: QueryState
+  rawSql?: string              // when set, overrides queryState in SQL generation
+  outputColumns: CteOutputColumn[]  // columns exposed when dragged as a virtual table
 }
 
 export interface QueryState {
@@ -140,6 +149,7 @@ export interface QueryState {
   timeColumn?: { tableAlias: string; columnName: string }
   timescaleBucket?: TimescaleBucket
   gapfillStrategies: GapfillStrategy[]
+  unionAllRawSql?: string  // raw SQL appended as UNION ALL branch after the main SELECT body
 }
 
 export function emptyFilterGroup(): FilterGroup {
@@ -169,5 +179,6 @@ export function emptyQueryState(): QueryState {
     timeColumn: undefined,
     timescaleBucket: undefined,
     gapfillStrategies: [],
+    unionAllRawSql: undefined,
   }
 }

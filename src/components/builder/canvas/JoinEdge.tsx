@@ -15,6 +15,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { X } from 'lucide-react'
 import type { JoinType } from '@/types/query'
+import { Label } from '@/components/ui/label'
 
 const JOIN_TYPES: JoinType[] = ['INNER', 'LEFT', 'RIGHT', 'FULL OUTER', 'CROSS']
 
@@ -52,9 +53,17 @@ export function JoinEdge({
 
   const updateJoin = useQueryStore((s) => s.updateJoin)
   const removeJoin = useQueryStore((s) => s.removeJoin)
+  // Look up the live join to get onExpression (edge data is stale snapshot)
+  const liveJoin = useQueryStore((s) =>
+    s.queryState.joins.find((j) => j.id === data?.joinId) ??
+    s.queryState.ctes.flatMap((c) => c.queryState.joins).find((j) => j.id === data?.joinId)
+  )
+  const onExpression = liveJoin?.onExpression ?? ''
+  const [customOn, setCustomOn] = useState(onExpression)
 
   const joinType = data?.joinType ?? 'INNER'
-  const color = JOIN_COLORS[joinType]
+  const hasCustomOn = !!liveJoin?.onExpression?.trim()
+  const color = hasCustomOn ? '#6366f1' : JOIN_COLORS[joinType]
 
   return (
     <>
@@ -77,27 +86,53 @@ export function JoinEdge({
                 className="flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold shadow-sm"
                 style={{ backgroundColor: color, color: 'white', borderColor: color }}
               >
-                {joinType}
+                {hasCustomOn ? 'CUSTOM' : joinType}
               </button>
             </PopoverTrigger>
-            <PopoverContent className="w-48 p-2">
-              <div className="mb-2 text-xs font-semibold text-muted-foreground">Join Type</div>
-              <div className="space-y-1">
-                {JOIN_TYPES.map((jt) => (
-                  <button
-                    key={jt}
-                    className="w-full rounded px-2 py-1 text-left text-sm hover:bg-muted"
-                    onClick={() => data?.joinId && updateJoin(data.joinId, { type: jt })}
-                  >
-                    <span
-                      className="mr-2 inline-block h-2 w-2 rounded-full"
-                      style={{ backgroundColor: JOIN_COLORS[jt] }}
-                    />
-                    {jt}
-                  </button>
-                ))}
+            <PopoverContent className="w-64 p-2 space-y-3">
+              <div>
+                <div className="mb-1 text-xs font-semibold text-muted-foreground">Join Type</div>
+                <div className="space-y-1">
+                  {JOIN_TYPES.map((jt) => (
+                    <button
+                      key={jt}
+                      className="w-full rounded px-2 py-1 text-left text-sm hover:bg-muted"
+                      onClick={() => data?.joinId && updateJoin(data.joinId, { type: jt })}
+                    >
+                      <span
+                        className="mr-2 inline-block h-2 w-2 rounded-full"
+                        style={{ backgroundColor: JOIN_COLORS[jt] }}
+                      />
+                      {jt}
+                      {jt === joinType && !hasCustomOn && (
+                        <span className="ml-1 text-[10px] text-muted-foreground">✓</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="mt-2 border-t pt-2">
+
+              <div className="border-t pt-2 space-y-1">
+                <Label className="text-xs">Custom ON clause (optional)</Label>
+                <textarea
+                  className="w-full rounded border bg-background px-2 py-1 text-xs font-mono resize-y min-h-[60px] focus:outline-none focus:ring-1 focus:ring-ring"
+                  placeholder="e.g. de.time <@ sr.tsrange AND sr.value = 2"
+                  value={customOn}
+                  onChange={(e) => setCustomOn(e.target.value)}
+                  onBlur={() =>
+                    data?.joinId &&
+                    updateJoin(data.joinId, {
+                      onExpression: customOn.trim() || undefined,
+                    })
+                  }
+                  spellCheck={false}
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  When set, replaces the generated <code className="font-mono">ON a = b</code> clause.
+                </p>
+              </div>
+
+              <div className="border-t pt-2">
                 <Button
                   variant="destructive"
                   size="sm"

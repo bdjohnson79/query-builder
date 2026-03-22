@@ -2,10 +2,12 @@
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api/client'
 import { useSchemaStore } from '@/store/schemaStore'
+import { useQueryStore } from '@/store/queryStore'
 import { DraggableTableCard } from './DraggableTableCard'
+import { DraggableCteCard } from './DraggableCteCard'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
-import { Search, Database } from 'lucide-react'
+import { Search, Database, Braces } from 'lucide-react'
 import type { AppSchema, AppTable, AppColumn } from '@/types/schema'
 import { WorkflowStepIndicator } from './WorkflowStepIndicator'
 
@@ -17,6 +19,8 @@ export function TableLibrary() {
   const tables = useSchemaStore((s) => s.tables)
   const columns = useSchemaStore((s) => s.columns)
   const [search, setSearch] = useState('')
+  const ctes = useQueryStore((s) => s.queryState.ctes)
+  const activeCteId = useQueryStore((s) => s.activeCteId)
 
   useEffect(() => {
     async function load() {
@@ -60,6 +64,21 @@ export function TableLibrary() {
 
       <ScrollArea className="flex-1">
         <div className="space-y-3 pr-2">
+          {/* Virtual Tables (CTEs) — only show when NOT editing a CTE */}
+          {!activeCteId && ctes.length > 0 && (
+            <div>
+              <div className="mb-1 flex items-center gap-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                <Braces className="h-3 w-3" />
+                Virtual Tables (CTEs)
+              </div>
+              <div className="space-y-1">
+                {ctes.map((cte) => (
+                  <DraggableCteCard key={cte.id} cte={cte} />
+                ))}
+              </div>
+            </div>
+          )}
+
           {bySchema.map(({ schema, tables: schemaTables }) =>
             schemaTables.length === 0 ? null : (
               <div key={schema.id}>
