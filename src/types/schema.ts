@@ -32,6 +32,11 @@ export interface AppForeignKey {
   constraintName: string | null
 }
 
+export interface QueryFolder {
+  id: number
+  name: string
+}
+
 export interface SavedQuery {
   id: number
   name: string
@@ -39,6 +44,8 @@ export interface SavedQuery {
   queryState: unknown   // JSONB
   generatedSql: string | null
   schemaId: number | null
+  folderId: number | null
+  tags: string[] | null
   createdAt: Date
   updatedAt: Date
 }

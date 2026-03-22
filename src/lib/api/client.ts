@@ -6,6 +6,7 @@ import type {
   CreateColumnBody, UpdateColumnBody, ColumnResponse,
   CreateForeignKeyBody, ForeignKeysResponse, ForeignKeyResponse,
   CreateQueryBody, UpdateQueryBody, QueriesResponse, QueryResponse,
+  CreateFolderBody, FoldersResponse, FolderResponse,
   LlmSuggestBody, LlmSuggestResponse,
   CreateJsonStructureBody, UpdateJsonStructureBody, JsonStructuresResponse, JsonStructureResponse,
 } from '@/types/api'
@@ -75,8 +76,23 @@ export const api = {
       apiFetch<void>(`/api/foreign-keys/${id}`, { method: 'DELETE' }),
   },
 
+  folders: {
+    list: () => apiFetch<FoldersResponse>('/api/folders'),
+    create: (body: CreateFolderBody) =>
+      apiFetch<FolderResponse>('/api/folders', { method: 'POST', body: JSON.stringify(body) }),
+    delete: (id: number) =>
+      apiFetch<void>(`/api/folders/${id}`, { method: 'DELETE' }),
+  },
+
   queries: {
-    list: () => apiFetch<QueriesResponse>('/api/queries'),
+    list: (params?: { search?: string; folderId?: number | 'none'; tags?: string[] }) => {
+      const qs = new URLSearchParams()
+      if (params?.search) qs.set('search', params.search)
+      if (params?.folderId != null) qs.set('folderId', String(params.folderId))
+      if (params?.tags?.length) qs.set('tags', params.tags.join(','))
+      const query = qs.toString()
+      return apiFetch<QueriesResponse>(`/api/queries${query ? `?${query}` : ''}`)
+    },
     get: (id: number) => apiFetch<QueryResponse>(`/api/queries/${id}`),
     create: (body: CreateQueryBody) =>
       apiFetch<QueryResponse>('/api/queries', { method: 'POST', body: JSON.stringify(body) }),

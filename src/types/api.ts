@@ -1,6 +1,6 @@
 // API request/response types
 
-import type { AppSchema, AppTable, AppColumn, AppForeignKey, SavedQuery } from './schema'
+import type { AppSchema, AppTable, AppColumn, AppForeignKey, SavedQuery, QueryFolder } from './schema'
 import type { QueryState } from './query'
 import type { JsonStructure, JsonStructureDefinition } from './json-structure'
 
@@ -40,6 +40,11 @@ export type ForeignKeyResponse = AppForeignKey & {
 }
 export type ForeignKeysResponse = ForeignKeyResponse[]
 
+// Folders
+export interface CreateFolderBody { name: string }
+export type FolderResponse = QueryFolder
+export type FoldersResponse = QueryFolder[]
+
 // Queries
 export interface CreateQueryBody {
   name: string
@@ -47,6 +52,8 @@ export interface CreateQueryBody {
   queryState: QueryState
   generatedSql?: string
   schemaId?: number
+  folderId?: number | null
+  tags?: string[] | null
 }
 export interface UpdateQueryBody extends Partial<CreateQueryBody> {}
 export type QueryResponse = SavedQuery

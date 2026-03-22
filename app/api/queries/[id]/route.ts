@@ -10,6 +10,8 @@ const UpdateQuery = z.object({
   queryState: z.unknown().optional(),
   generatedSql: z.string().nullable().optional(),
   schemaId: z.number().int().positive().nullable().optional(),
+  folderId: z.number().int().nullable().optional(),
+  tags: z.array(z.string()).nullable().optional(),
 })
 
 type Params = Promise<{ id: string }>

@@ -58,6 +58,11 @@ export const jsonStructures = pgTable('json_structures', {
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 })
 
+export const savedQueryFolders = pgTable('saved_query_folders', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull(),
+})
+
 export const savedQueries = pgTable('saved_queries', {
   id: serial('id').primaryKey(),
   name: text('name').notNull(),
@@ -67,6 +72,10 @@ export const savedQueries = pgTable('saved_queries', {
   schemaId: integer('schema_id').references(() => appSchemas.id, {
     onDelete: 'set null',
   }),
+  folderId: integer('folder_id').references(() => savedQueryFolders.id, {
+    onDelete: 'set null',
+  }),
+  tags: text('tags').array(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 })
@@ -105,9 +114,17 @@ export const appForeignKeysRelations = relations(appForeignKeys, ({ one }) => ({
   }),
 }))
 
+export const savedQueryFoldersRelations = relations(savedQueryFolders, ({ many }) => ({
+  queries: many(savedQueries),
+}))
+
 export const savedQueriesRelations = relations(savedQueries, ({ one }) => ({
   schema: one(appSchemas, {
     fields: [savedQueries.schemaId],
     references: [appSchemas.id],
+  }),
+  folder: one(savedQueryFolders, {
+    fields: [savedQueries.folderId],
+    references: [savedQueryFolders.id],
   }),
 }))

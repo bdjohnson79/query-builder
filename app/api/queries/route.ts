@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
+import { and, eq, ilike, isNull, or, arrayContains } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { savedQueries } from '@/lib/db/schema'
 
@@ -9,11 +10,45 @@ const CreateQuery = z.object({
   queryState: z.unknown(),
   generatedSql: z.string().optional(),
   schemaId: z.number().int().positive().optional(),
+  folderId: z.number().int().nullable().optional(),
+  tags: z.array(z.string()).nullable().optional(),
 })
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    const queries = await db.select().from(savedQueries)
+    const url = new URL(req.url)
+    const search = url.searchParams.get('search')
+    const folderIdParam = url.searchParams.get('folderId')
+    const tagsParam = url.searchParams.get('tags')
+
+    const conditions = []
+
+    if (search) {
+      conditions.push(
+        or(
+          ilike(savedQueries.name, `%${search}%`),
+          ilike(savedQueries.description, `%${search}%`)
+        )
+      )
+    }
+
+    if (folderIdParam === 'none') {
+      conditions.push(isNull(savedQueries.folderId))
+    } else if (folderIdParam) {
+      conditions.push(eq(savedQueries.folderId, Number(folderIdParam)))
+    }
+
+    if (tagsParam) {
+      const tags = tagsParam.split(',').filter(Boolean)
+      if (tags.length > 0) {
+        conditions.push(arrayContains(savedQueries.tags, tags))
+      }
+    }
+
+    const queries = conditions.length > 0
+      ? await db.select().from(savedQueries).where(and(...conditions))
+      : await db.select().from(savedQueries)
+
     return NextResponse.json(queries)
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 })
@@ -31,6 +66,8 @@ export async function POST(req: Request) {
         queryState: body.queryState,
         generatedSql: body.generatedSql,
         schemaId: body.schemaId,
+        folderId: body.folderId ?? null,
+        tags: body.tags ?? null,
       })
       .returning()
     return NextResponse.json(query, { status: 201 })
