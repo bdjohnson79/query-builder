@@ -7,6 +7,7 @@ import { appTables, appColumns } from '@/lib/db/schema'
 const UpdateTable = z.object({
   name: z.string().min(1).optional(),
   displayName: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
 })
 
 type Params = Promise<{ id: string }>

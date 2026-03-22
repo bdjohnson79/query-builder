@@ -173,6 +173,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
                     'flex flex-1 cursor-pointer items-center gap-1 text-[10px]',
                     col.isPrimaryKey && 'font-medium'
                   )}
+                  title={col.description ?? undefined}
                 >
                   {col.isPrimaryKey && <Key className="h-2 w-2 text-amber-500" />}
                   <span className="truncate">{col.name}</span>

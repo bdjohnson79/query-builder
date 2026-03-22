@@ -21,6 +21,7 @@ export const appTables = pgTable('app_tables', {
     .references(() => appSchemas.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
   displayName: text('display_name'),
+  description: text('description'),
 })
 
 export const appColumns = pgTable('app_columns', {
@@ -34,6 +35,7 @@ export const appColumns = pgTable('app_columns', {
   defaultValue: text('default_value'),
   isPrimaryKey: boolean('is_primary_key').notNull().default(false),
   ordinalPosition: integer('ordinal_position').notNull().default(0),
+  description: text('description'),
 })
 
 export const appForeignKeys = pgTable('app_foreign_keys', {

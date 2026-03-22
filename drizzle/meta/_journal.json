@@ -15,6 +15,13 @@
       "when": 1773543557156,
       "tag": "0001_demonic_colleen_wing",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1774202847594,
+      "tag": "0002_brown_bloodscream",
+      "breakpoints": true
     }
   ]
 }

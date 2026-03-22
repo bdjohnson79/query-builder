@@ -11,6 +11,7 @@ const UpdateColumn = z.object({
   defaultValue: z.string().nullable().optional(),
   isPrimaryKey: z.boolean().optional(),
   ordinalPosition: z.number().int().optional(),
+  description: z.string().nullable().optional(),
 })
 
 type Params = Promise<{ id: string; colId: string }>

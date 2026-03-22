@@ -29,6 +29,7 @@ export interface ColumnMeta {
   pgType: string
   isNullable: boolean
   isPrimaryKey: boolean
+  description?: string | null
 }
 
 export interface JoinDef {

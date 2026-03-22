@@ -11,6 +11,7 @@ const CreateColumn = z.object({
   defaultValue: z.string().nullable().optional(),
   isPrimaryKey: z.boolean().default(false),
   ordinalPosition: z.number().int().default(0),
+  description: z.string().nullable().optional(),
 })
 
 type Params = Promise<{ id: string }>

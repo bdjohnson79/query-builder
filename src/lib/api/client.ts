@@ -97,6 +97,17 @@ export const api = {
       }),
   },
 
+  schemaImport: {
+    apply: (body: {
+      tables: unknown[]
+      selectedKeys: string[]
+    }) =>
+      apiFetch<{ added: number; updated: number; unchanged: number }>('/api/schema-import', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+  },
+
   jsonStructures: {
     list: () => apiFetch<JsonStructuresResponse>('/api/json-structures'),
     get: (id: number) => apiFetch<JsonStructureResponse>(`/api/json-structures/${id}`),

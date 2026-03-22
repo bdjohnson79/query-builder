@@ -25,6 +25,7 @@ export function TableEditor({ table, schemaId, onSaved, onCancel }: Props) {
   const isNew = table.id === 0
   const [name, setName] = useState(table.name)
   const [displayName, setDisplayName] = useState(table.displayName ?? '')
+  const [description, setDescription] = useState(table.description ?? '')
   const [columns, setColumns] = useState<Omit<AppColumn, 'id' | 'tableId'>[]>(
     table.columns.map(({ id: _, tableId: __, ...c }) => c)
   )
@@ -41,6 +42,7 @@ export function TableEditor({ table, schemaId, onSaved, onCancel }: Props) {
         defaultValue: null,
         isPrimaryKey: false,
         ordinalPosition: columns.length,
+        description: null,
       },
     ])
   }
@@ -70,6 +72,7 @@ export function TableEditor({ table, schemaId, onSaved, onCancel }: Props) {
         await api.tables.update(table.id, {
           name,
           displayName: displayName || undefined,
+          description: description || null,
         })
         // Delete all existing columns and re-create (simple approach for MVP)
         for (const col of table.columns) {
@@ -84,6 +87,7 @@ export function TableEditor({ table, schemaId, onSaved, onCancel }: Props) {
           ...col,
           ordinalPosition: i,
           defaultValue: col.defaultValue ?? undefined,
+          description: col.description ?? undefined,
         })
       }
       onSaved(name, isNew)
@@ -119,6 +123,14 @@ export function TableEditor({ table, schemaId, onSaved, onCancel }: Props) {
           <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Orders" />
         </div>
       </div>
+      <div className="space-y-1">
+        <Label>Description (optional)</Label>
+        <Input
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="What does this table contain?"
+        />
+      </div>
 
       <div className="space-y-3">
         <div className="flex items-center justify-between">
@@ -139,6 +151,7 @@ export function TableEditor({ table, schemaId, onSaved, onCancel }: Props) {
                   <th className="px-3 py-2 text-left font-medium text-xs">Default</th>
                   <th className="px-3 py-2 text-center font-medium text-xs">Nullable</th>
                   <th className="px-3 py-2 text-center font-medium text-xs">PK</th>
+                  <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">Description</th>
                   <th className="px-3 py-2" />
                 </tr>
               </thead>
@@ -180,6 +193,14 @@ export function TableEditor({ table, schemaId, onSaved, onCancel }: Props) {
                       <Checkbox
                         checked={col.isPrimaryKey}
                         onCheckedChange={(v) => updateColumn(idx, { isPrimaryKey: Boolean(v) })}
+                      />
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <Input
+                        className="h-7 text-xs min-w-[120px]"
+                        value={col.description ?? ''}
+                        onChange={(e) => updateColumn(idx, { description: e.target.value || null })}
+                        placeholder="optional"
                       />
                     </td>
                     <td className="px-3 py-1.5">

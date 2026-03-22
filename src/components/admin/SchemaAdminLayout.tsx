@@ -8,7 +8,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { ToastProvider, useToast } from '@/components/ui/toast'
 import { TableEditor } from './TableEditor'
 import { ForeignKeyManager } from './ForeignKeyManager'
-import { Plus, Database, Trash2, ChevronRight, Link2 } from 'lucide-react'
+import { SchemaImportDialog } from './SchemaImportDialog'
+import { Plus, Database, Trash2, ChevronRight, Link2, Upload } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { AppSchema, AppTable, AppColumn } from '@/types/schema'
 
@@ -25,6 +26,13 @@ function SchemaAdminInner() {
   const [newSchemaName, setNewSchemaName] = useState('')
   const [schemaDialogOpen, setSchemaDialogOpen] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [importDialogOpen, setImportDialogOpen] = useState(false)
+
+  // columns map keyed by table id (for diff computation in import dialog)
+  const columnsMap: Record<number, AppColumn[]> = {}
+  for (const t of tables) {
+    if (t.columns) columnsMap[t.id] = t.columns
+  }
 
   const loadSchemas = async () => {
     const s = await api.schemas.list()
@@ -103,12 +111,18 @@ function SchemaAdminInner() {
           <Database className="h-4 w-4 text-blue-600" />
           Schema Admin
         </div>
-        <a href="/admin/json-structures" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
-          JSON Structures
-        </a>
-        <a href="/builder" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
-          ← Query Builder
-        </a>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setImportDialogOpen(true)}>
+            <Upload className="mr-1 h-3.5 w-3.5" />
+            Import
+          </Button>
+          <a href="/admin/json-structures" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
+            JSON Structures
+          </a>
+          <a href="/builder" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
+            ← Query Builder
+          </a>
+        </div>
       </nav>
 
       <div className="flex flex-1 overflow-hidden">
@@ -155,7 +169,7 @@ function SchemaAdminInner() {
                 size="icon"
                 className="h-6 w-6"
                 onClick={() =>
-                  selectTable({ id: 0, schemaId: selectedSchema.id, name: '', displayName: null, columns: [] })
+                  selectTable({ id: 0, schemaId: selectedSchema.id, name: '', displayName: null, description: null, columns: [] })
                 }
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -234,6 +248,19 @@ function SchemaAdminInner() {
           )}
         </div>
       </div>
+
+      {/* Import Schema Dialog */}
+      <SchemaImportDialog
+        open={importDialogOpen}
+        onClose={() => setImportDialogOpen(false)}
+        existingTables={tables}
+        existingColumns={columnsMap}
+        onImported={() => {
+          if (selectedSchema) loadTables(selectedSchema.id)
+          else loadSchemas()
+        }}
+        onToast={toast}
+      />
 
       {/* Create Schema Dialog */}
       <Dialog open={schemaDialogOpen} onOpenChange={setSchemaDialogOpen}>

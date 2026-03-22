@@ -10,6 +10,7 @@ export interface AppTable {
   schemaId: number
   name: string
   displayName: string | null
+  description: string | null
 }
 
 export interface AppColumn {
@@ -21,6 +22,7 @@ export interface AppColumn {
   defaultValue: string | null
   isPrimaryKey: boolean
   ordinalPosition: number
+  description: string | null
 }
 
 export interface AppForeignKey {

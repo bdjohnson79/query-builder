@@ -11,7 +11,7 @@ export type SchemasResponse = AppSchema[]
 
 // Tables
 export interface CreateTableBody { schemaId: number; name: string; displayName?: string }
-export interface UpdateTableBody { name?: string; displayName?: string }
+export interface UpdateTableBody { name?: string; displayName?: string; description?: string | null }
 export type TableResponse = AppTable & { columns?: AppColumn[] }
 export type TablesResponse = TableResponse[]
 
@@ -23,6 +23,7 @@ export interface CreateColumnBody {
   defaultValue?: string
   isPrimaryKey?: boolean
   ordinalPosition?: number
+  description?: string | null
 }
 export interface UpdateColumnBody extends Partial<CreateColumnBody> {}
 export type ColumnResponse = AppColumn
