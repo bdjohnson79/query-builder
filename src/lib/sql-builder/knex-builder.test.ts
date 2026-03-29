@@ -535,6 +535,73 @@ describe('WHERE — Grafana macros', () => {
 })
 
 // ---------------------------------------------------------------------------
+// WHERE — timeLookback and column references
+// ---------------------------------------------------------------------------
+
+describe('WHERE — timeLookback and column references', () => {
+  it('emits timeLookback BETWEEN expression', () => {
+    const alias = 'e'
+    const col = 'evt_time'
+    const field = `${alias}.${col}`
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'event' })],
+      where: makeGroup('AND', [makeRule(field, 'timeLookback', '30d')]),
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain(`${alias}.${col} BETWEEN $__timeFrom()::timestamp - INTERVAL '30d' AND $__timeFrom()::timestamp`)
+  })
+
+  it('emits column reference value unquoted for correlated conditions', () => {
+    const state = makeState({
+      tables: [makeTable({ alias: 'e', tableName: 'event' })],
+      where: makeGroup('AND', [makeRule('e.tag', '=', 't2.name')]),
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('e.tag = t2.name')
+    expect(sql).not.toContain("'t2.name'")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// LATERAL join
+// ---------------------------------------------------------------------------
+
+describe('LATERAL join', () => {
+  it('emits LEFT JOIN LATERAL with subquery and ON clause', () => {
+    const lateralSub: QueryState = {
+      ...emptyQueryState(),
+      tables: [makeTable({ alias: 'inner_e', tableName: 'event' })],
+      selectedColumns: [makeCol('inner_e', 'value')],
+      where: makeGroup('AND', [makeRule('inner_e.tag', '=', 't2.name')]),
+      orderBy: [{ tableAlias: 'inner_e', columnName: 'ts', direction: 'DESC' }],
+      limit: 1,
+    }
+    const lateralJoin: JoinDef = {
+      id: 'j1',
+      type: 'LATERAL',
+      leftTableAlias: '',
+      leftColumn: '',
+      rightTableAlias: 'e2',
+      rightColumn: '',
+      lateralAlias: 'e2',
+      onExpression: 'TRUE',
+      lateralSubquery: lateralSub,
+    }
+    const state = makeState({
+      tables: [makeTable({ alias: 't2', tableName: 'tags' })],
+      selectedColumns: [makeCol('t2', 'description'), makeCol('e2', 'value')],
+      joins: [lateralJoin],
+      where: makeGroup('AND', [makeRule('e2.value', 'notNull', '')]),
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('LEFT JOIN LATERAL')
+    expect(sql).toContain('AS e2 ON TRUE')
+    expect(sql).toContain('inner_e.tag = t2.name')
+    expect(sql).toContain('e2.value IS NOT NULL')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // GROUP BY
 // ---------------------------------------------------------------------------
 

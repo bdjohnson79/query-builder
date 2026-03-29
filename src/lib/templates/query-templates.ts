@@ -212,20 +212,113 @@ function makeHelpers(schemaStore: {
 }
 
 // ---------------------------------------------------------------------------
-// Standard time-series: tags CTE (visual) + event+tags main + unionQuery (raw SQL lookback)
+// Standard time-series: tags CTE (visual) + event+tags main + visual union lookback
 // ---------------------------------------------------------------------------
 
-const STANDARD_LOOKBACK_SQL = `SELECT $__timeFrom()::timestamp AS time, t2.description, value
-FROM tags t2
-LEFT JOIN LATERAL (
-    SELECT time, t2.description, value
-    FROM event
-    WHERE time BETWEEN $__timeFrom()::timestamp - INTERVAL '30d' AND $__timeFrom()::timestamp
-        AND tag = t2.name
-    ORDER BY time DESC
-    LIMIT 1
-) e2 ON true
-WHERE e2.value IS NOT NULL`
+/**
+ * Builds the UNION ALL lookback branch as a fully visual QueryState.
+ * Generates:
+ *   SELECT $__timeFrom()::timestamp AS time, t2.description, e2.value
+ *   FROM tags t2
+ *   LEFT JOIN LATERAL (
+ *     SELECT event.time, t2.description, event.value
+ *     FROM event
+ *     WHERE event.time timeLookback '30d'
+ *       AND event.tag = t2.name
+ *     ORDER BY event.time DESC
+ *     LIMIT 1
+ *   ) AS e2 ON TRUE
+ *   WHERE e2.value IS NOT NULL
+ */
+function buildLookbackQueryState(
+  tagsCteId: string,
+  tagsOutputColumns: CteOutputColumn[],
+  eventTable: AppTable,
+  eventCols: AppColumn[],
+  getSchemaName: (id: number) => string,
+  toColumnMeta: (cols: AppColumn[]) => { id: number; name: string; pgType: string; isNullable: boolean; isPrimaryKey: boolean }[]
+): QueryState {
+  const lateralSubquery: QueryState = {
+    ...emptyQueryState(),
+    isSubquery: true,
+    tables: [{
+      id: crypto.randomUUID(),
+      tableId: eventTable.id,
+      tableName: eventTable.name,
+      schemaName: getSchemaName(eventTable.schemaId),
+      alias: 'event',
+      position: { x: 0, y: 0 },
+      columns: toColumnMeta(eventCols),
+    }],
+    selectedColumns: [
+      { id: crypto.randomUUID(), tableAlias: 'event', columnName: 'time' },
+      // t2 is outer scope — the SQL builder emits "t2"."description" which PostgreSQL resolves correctly
+      { id: crypto.randomUUID(), tableAlias: 't2', columnName: 'description' },
+      { id: crypto.randomUUID(), tableAlias: 'event', columnName: 'value' },
+    ],
+    where: {
+      id: crypto.randomUUID(),
+      combinator: 'AND',
+      rules: [
+        { id: crypto.randomUUID(), field: 'event.time', operator: 'timeLookback', value: '30d' },
+        // t2.name is a column reference — quoteValue emits it unquoted
+        { id: crypto.randomUUID(), field: 'event.tag', operator: '=', value: 't2.name' },
+      ],
+    },
+    orderBy: [{ tableAlias: 'event', columnName: 'time', direction: 'DESC' }],
+    limit: 1,
+  }
+
+  return {
+    ...emptyQueryState(),
+    tables: [{
+      id: crypto.randomUUID(),
+      tableId: 0,
+      tableName: 'tags',
+      schemaName: '',
+      alias: 't2',
+      cteId: tagsCteId,
+      position: { x: 0, y: 100 },
+      columns: tagsOutputColumns.map((c, i) => ({
+        id: i,
+        name: c.name,
+        pgType: c.pgType,
+        isNullable: true,
+        isPrimaryKey: false,
+      })),
+    }],
+    joins: [{
+      id: crypto.randomUUID(),
+      type: 'LATERAL',
+      leftTableAlias: '',
+      leftColumn: '',
+      rightTableAlias: 'e2',
+      rightColumn: '',
+      lateralAlias: 'e2',
+      onExpression: 'TRUE',
+      lateralSubquery,
+      canvasPosition: { x: 380, y: 100 },
+    }],
+    selectedColumns: [
+      {
+        id: crypto.randomUUID(),
+        tableAlias: '__expr__',
+        columnName: 'time',
+        alias: 'time',
+        expression: '$__timeFrom()::timestamp',
+      },
+      { id: crypto.randomUUID(), tableAlias: 't2', columnName: 'description' },
+      { id: crypto.randomUUID(), tableAlias: 'e2', columnName: 'value' },
+    ],
+    where: {
+      id: crypto.randomUUID(),
+      combinator: 'AND',
+      rules: [
+        { id: crypto.randomUUID(), field: 'e2.value', operator: 'notNull', value: '' },
+      ],
+    },
+  }
+}
 
 function buildStandardTimeSeriesState(schemaStore: {
   schemas: AppSchema[]
@@ -364,7 +457,7 @@ function buildStandardTimeSeriesState(schemaStore: {
       { tableAlias: 'e', columnName: 'time', direction: 'ASC' },
       { tableAlias: 't', columnName: 'description', direction: 'ASC' },
     ],
-    unionQuery: { operator: 'UNION ALL', queryState: emptyQueryState(), rawSql: STANDARD_LOOKBACK_SQL },
+    unionQuery: { operator: 'UNION ALL', queryState: buildLookbackQueryState(tagsCteId, tagsOutputColumns, eventTable, eventCols, getSchemaName, toColumnMeta) },
     timeColumn: eventCols.some((c) => c.name === 'time')
       ? { tableAlias: 'e', columnName: 'time' }
       : undefined,

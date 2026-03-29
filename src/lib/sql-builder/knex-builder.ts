@@ -155,9 +155,10 @@ function buildRawSql(state: QueryState, omitTrailer = false): string {
 
     let safetyLimit = joins.length * joins.length + 1
     while (pending.length > 0 && safetyLimit-- > 0) {
-      // Find a join where at least one side is already in scope
+      // Find a join where at least one side is already in scope.
+      // LATERAL joins always qualify — they reference the outer scope, not a specific column.
       const idx = pending.findIndex(
-        (j) => inScope.has(j.leftTableAlias) || inScope.has(j.rightTableAlias)
+        (j) => j.type === 'LATERAL' || inScope.has(j.leftTableAlias) || inScope.has(j.rightTableAlias)
       )
       if (idx === -1) {
         // Disconnected subgraph — emit remaining joins as-is (will produce a cross join)
@@ -458,6 +459,8 @@ function quoteValue(val: unknown): string {
   const s = String(val)
   // Grafana dashboard variable — emit unquoted so Grafana can substitute at render time
   if (/^\$[a-zA-Z_][a-zA-Z0-9_]*$/.test(s)) return s
+  // Dotted column reference (alias.column) — emit unquoted for correlated subquery conditions
+  if (/^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*$/.test(s)) return s
   // Numeric strings
   if (/^-?\d+(\.\d+)?$/.test(s)) return s
   return `'${s.replace(/'/g, "''")}'`
