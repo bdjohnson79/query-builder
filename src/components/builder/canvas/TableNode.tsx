@@ -11,12 +11,15 @@ import type { TableInstance, ColumnMeta, SelectedColumn } from '@/types/query'
 
 interface TableNodeData {
   instance: TableInstance
+  /** When true the node is a read-only "outer scope" ghost shown during LATERAL subquery editing */
+  isOuterScope?: boolean
 }
 
 export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeData>) {
-  const { instance } = data
+  const { instance, isOuterScope = false } = data
   const selectedColumns = useQueryStore((s) => s.queryState.selectedColumns)
   const jsonbMappings = useQueryStore((s) => s.queryState.jsonbMappings)
+  const jsonbExpansions = useQueryStore((s) => s.queryState.jsonbExpansions)
   const toggleColumn = useQueryStore((s) => s.toggleColumn)
   const removeTable = useQueryStore((s) => s.removeTable)
   const updateTableAlias = useQueryStore((s) => s.updateTableAlias)
@@ -86,29 +89,43 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
 
   const handleJsonbPathToggle = (col: ColumnMeta, pathLabel: string, expression: string) => {
     const alias = pathLabel.split('.').pop() ?? pathLabel
+    // Check if this path is currently selected via a CROSS JOIN expansion alias (e.g. from a template)
+    const expansion = jsonbExpansions.find(
+      (e) => e.tableAlias === instance.alias && e.columnName === col.name
+    )
+    const existingViaExpansion = expansion
+      ? selectedColumns.find((c) => c.tableAlias === expansion.expandAlias && c.columnName === alias)
+      : undefined
+    if (existingViaExpansion) {
+      toggleColumn(existingViaExpansion)
+      return
+    }
+    // Otherwise check/toggle by expression (path extraction mode)
     const existing = selectedColumns.find(
       (c) => c.tableAlias === instance.alias && c.expression === expression
     )
     if (existing) {
       toggleColumn(existing)
     } else {
-      const col_: SelectedColumn = {
+      toggleColumn({
         id: crypto.randomUUID(),
         tableAlias: instance.alias,
         columnName: col.name,
         expression,
         alias,
-      }
-      toggleColumn(col_)
+      })
     }
   }
 
   const isCte = !!instance.cteId
-  const headerBg = isCte ? 'bg-purple-600' : 'bg-blue-600'
-  const handleColor = isCte ? '!border-purple-400' : '!border-blue-400'
+  const headerBg = isOuterScope ? 'bg-slate-500' : isCte ? 'bg-purple-600' : 'bg-blue-600'
+  const handleColor = isOuterScope ? '!border-slate-400' : isCte ? '!border-purple-400' : '!border-blue-400'
 
   return (
-    <div ref={nodeRef} className="min-w-[140px] rounded border border-border bg-card shadow-sm">
+    <div
+      ref={nodeRef}
+      className={cn('min-w-[140px] rounded border border-border bg-card shadow-sm', isOuterScope && 'opacity-50 pointer-events-none')}
+    >
       {/* Header */}
       <div className={`flex items-center justify-between rounded-t ${headerBg} px-2 py-1 text-white`}>
         <div className="min-w-0">
@@ -116,6 +133,9 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
             <div className="truncate font-semibold text-[10px]">{instance.tableName}</div>
             {isCte && (
               <span className="rounded bg-white/20 px-0.5 text-[7px] font-semibold shrink-0">CTE</span>
+            )}
+            {isOuterScope && (
+              <span className="rounded bg-white/20 px-0.5 text-[7px] font-semibold shrink-0">outer</span>
             )}
           </div>
           {editingAlias ? (
@@ -137,12 +157,14 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
             </div>
           )}
         </div>
-        <button
-          className="ml-1 shrink-0 rounded hover:bg-white/20 p-0.5"
-          onClick={() => removeTable(instance.id)}
-        >
-          <X className="h-2.5 w-2.5" />
-        </button>
+        {!isOuterScope && (
+          <button
+            className="ml-1 shrink-0 rounded hover:bg-white/20 p-0.5"
+            onClick={() => removeTable(instance.id)}
+          >
+            <X className="h-2.5 w-2.5" />
+          </button>
+        )}
       </div>
 
       {/* Columns */}
@@ -223,7 +245,14 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
 
               {/* JSONB path rows */}
               {isExpanded && pathOptions.map((opt) => {
-                const pathSelected = selectedColumns.some((c) => c.expression === opt.pgExpression)
+                const expansion = jsonbExpansions.find(
+                  (e) => e.tableAlias === instance.alias && e.columnName === col.name
+                )
+                const pathSelected =
+                  selectedColumns.some((c) => c.expression === opt.pgExpression) ||
+                  (expansion != null && selectedColumns.some(
+                    (c) => c.tableAlias === expansion.expandAlias && c.columnName === opt.path
+                  ))
                 return (
                   <div
                     key={opt.path}

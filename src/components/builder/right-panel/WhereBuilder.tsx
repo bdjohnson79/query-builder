@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { useQueryStore } from '@/store/queryStore'
+import { getActiveQueryState, getLateralOuterScopeTables } from '@/store/queryStore'
 import { useJsonStructureStore } from '@/store/jsonStructureStore'
 import QueryBuilder, { defaultOperators } from 'react-querybuilder'
 import type { ValueEditorProps } from 'react-querybuilder'
@@ -14,6 +15,7 @@ const GRAFANA_OPERATORS = [
   { name: '$__timeFilter',        label: '$__timeFilter(col)' },
   { name: '$__unixEpochFilter',   label: '$__unixEpochFilter(col)' },
   { name: '$__unixEpochNanoFilter', label: '$__unixEpochNanoFilter(col)' },
+  { name: 'timeLookback',         label: 'time lookback BETWEEN (col, interval)' },
 ]
 
 const ALL_OPERATORS = [
@@ -72,9 +74,28 @@ function BetweenValueEditor({ value, handleOnChange }: ValueEditorProps) {
   )
 }
 
+function TimeLookbackValueEditor({ value, handleOnChange }: ValueEditorProps) {
+  return (
+    <div className="flex flex-col gap-0.5 w-full">
+      <input
+        className="w-full"
+        value={String(value ?? '')}
+        onChange={(e) => handleOnChange(e.target.value)}
+        placeholder="e.g. 30d or 1 hour"
+      />
+      <span className="text-[9px] text-muted-foreground leading-tight">
+        Generates: col BETWEEN $__timeFrom()::timestamp - INTERVAL &apos;…&apos; AND $__timeFrom()::timestamp
+      </span>
+    </div>
+  )
+}
+
 function ValueEditor(props: ValueEditorProps) {
   if (props.operator === 'between' || props.operator === 'notBetween') {
     return <BetweenValueEditor {...props} />
+  }
+  if (props.operator === 'timeLookback') {
+    return <TimeLookbackValueEditor {...props} />
   }
   // Grafana macro operators need no value input — the column is the argument
   if (GRAFANA_OP_NAMES.has(props.operator)) {
@@ -129,10 +150,11 @@ interface Props {
 }
 
 export function WhereBuilder({ mode }: Props) {
-  const where = useQueryStore((s) => s.queryState.where)
-  const having = useQueryStore((s) => s.queryState.having)
-  const tables = useQueryStore((s) => s.queryState.tables)
-  const jsonbMappings = useQueryStore((s) => s.queryState.jsonbMappings)
+  const where        = useQueryStore((s) => getActiveQueryState(s).where)
+  const having       = useQueryStore((s) => getActiveQueryState(s).having)
+  const tables       = useQueryStore((s) => getActiveQueryState(s).tables)
+  const jsonbMappings = useQueryStore((s) => getActiveQueryState(s).jsonbMappings)
+  const outerTables  = useQueryStore((s) => getLateralOuterScopeTables(s))
   const setWhere = useQueryStore((s) => s.setWhere)
   const setHaving = useQueryStore((s) => s.setHaving)
   const structures = useJsonStructureStore((s) => s.structures)
@@ -153,7 +175,14 @@ export function WhereBuilder({ mode }: Props) {
     }))
   })
 
-  const fields = [...regularFields, ...jsonbFields]
+  const outerFields = outerTables.flatMap((t) =>
+    t.columns.map((c) => ({
+      name: `${t.alias}.${c.name}`,
+      label: `[outer] ${t.alias}.${c.name}`,
+    }))
+  )
+
+  const fields = [...regularFields, ...jsonbFields, ...outerFields]
 
   const query = toRQB(mode === 'where' ? where : having)
 

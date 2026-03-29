@@ -191,6 +191,20 @@ function setActiveQueryState(s: QueryStore, next: QueryState): Partial<QueryStor
   return { queryState: next, generatedSql: rebuildSql(next) }
 }
 
+/** Returns the tables in scope for the outer context when editing a LATERAL subquery. */
+export function getLateralOuterScopeTables(s: QueryStore): QueryState['tables'] {
+  if (!s.activeLateralJoinId) return []
+  if (s.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
+    return s.queryState.tables
+  }
+  if (s.queryState.unionQuery?.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
+    return s.queryState.unionQuery.queryState.tables
+  }
+  return []
+}
+
+export { getActiveQueryState }
+
 export const useQueryStore = create<QueryStore>()(
   persist(
   subscribeWithSelector((set, get) => ({

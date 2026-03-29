@@ -442,6 +442,10 @@ function buildRuleFragment(rule: FilterRule): string | null {
       return `$__unixEpochFilter(${quotedField})`
     case '$__unixEpochNanoFilter':
       return `$__unixEpochNanoFilter(${quotedField})`
+    case 'timeLookback': {
+      const interval = String(val ?? '30d').trim() || '30d'
+      return `${quotedField} BETWEEN $__timeFrom()::timestamp - INTERVAL '${interval}' AND $__timeFrom()::timestamp`
+    }
     default:
       return null
   }

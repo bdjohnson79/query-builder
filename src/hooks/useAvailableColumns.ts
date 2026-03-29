@@ -1,4 +1,5 @@
 import { useQueryStore } from '@/store/queryStore'
+import { getActiveQueryState, getLateralOuterScopeTables } from '@/store/queryStore'
 
 export interface AvailableColumn {
   tableAlias: string
@@ -6,17 +7,22 @@ export interface AvailableColumn {
   pgType: string
   /** True when this column comes from a JSONB expand-as-record expansion */
   isExpansion?: boolean
+  /** True when this column comes from the outer query scope (LATERAL correlated reference) */
+  isOuterScope?: boolean
 }
 
 /**
  * Returns all columns available for ORDER BY, GROUP BY, window functions, etc.
  * Includes both regular table columns and JSONB expand-as-record fields.
+ *
+ * When editing a LATERAL subquery, also includes outer-scope tables marked
+ * `isOuterScope: true` so correlated WHERE conditions can reference them.
  */
 export function useAvailableColumns(): AvailableColumn[] {
-  const tables         = useQueryStore((s) => s.queryState.tables)
-  const jsonbExpansions = useQueryStore((s) => s.queryState.jsonbExpansions)
+  const active          = useQueryStore((s) => getActiveQueryState(s))
+  const outerTables     = useQueryStore((s) => getLateralOuterScopeTables(s))
 
-  const tableCols: AvailableColumn[] = tables.flatMap((t) =>
+  const tableCols: AvailableColumn[] = active.tables.flatMap((t) =>
     t.columns.map((c) => ({
       tableAlias: t.alias,
       columnName: c.name,
@@ -24,7 +30,7 @@ export function useAvailableColumns(): AvailableColumn[] {
     }))
   )
 
-  const expansionCols: AvailableColumn[] = jsonbExpansions.flatMap((exp) =>
+  const expansionCols: AvailableColumn[] = (active.jsonbExpansions ?? []).flatMap((exp) =>
     exp.fields.map((f) => ({
       tableAlias: exp.expandAlias,
       columnName: f.name,
@@ -33,5 +39,14 @@ export function useAvailableColumns(): AvailableColumn[] {
     }))
   )
 
-  return [...tableCols, ...expansionCols]
+  const outerCols: AvailableColumn[] = outerTables.flatMap((t) =>
+    t.columns.map((c) => ({
+      tableAlias: t.alias,
+      columnName: c.name,
+      pgType: c.pgType,
+      isOuterScope: true,
+    }))
+  )
+
+  return [...tableCols, ...expansionCols, ...outerCols]
 }

@@ -14,6 +14,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 import { useDndMonitor, useDroppable } from '@dnd-kit/core'
 import { useQueryStore } from '@/store/queryStore'
+import { getLateralOuterScopeTables } from '@/store/queryStore'
 import { TableNode } from './TableNode'
 import { JoinEdge } from './JoinEdge'
 import { LateralSubqueryNode, type LateralNodeData } from './LateralSubqueryNode'
@@ -70,12 +71,25 @@ function joinToEdge(join: JoinDef, tables: TableInstance[]): Edge {
   }
 }
 
-function buildNodes(qs: QueryState): Node[] {
+function outerTableToGhostNode(instance: TableInstance, index: number): Node {
+  return {
+    id: `outer__${instance.id}`,
+    type: 'tableNode',
+    position: { x: -180, y: index * 180 },
+    data: { instance, isOuterScope: true },
+    draggable: false,
+    selectable: false,
+    connectable: false,
+  }
+}
+
+function buildNodes(qs: QueryState, outerTables: TableInstance[] = []): Node[] {
   const tableNodes = qs.tables.map(tableToNode)
   const lateralNodes = qs.joins
     .filter((j) => j.type === 'LATERAL')
     .map((j, i) => lateralToNode(j, i))
-  return [...tableNodes, ...lateralNodes]
+  const ghostNodes = outerTables.map((t, i) => outerTableToGhostNode(t, i))
+  return [...tableNodes, ...lateralNodes, ...ghostNodes]
 }
 
 function buildEdges(qs: QueryState): Edge[] {
@@ -210,6 +224,7 @@ export function QueryCanvas({ onStartTour }: QueryCanvasProps) {
   const activeCteId = useQueryStore((s) => s.activeCteId)
   const activeLateralJoinId = useQueryStore((s) => s.activeLateralJoinId)
   const activeQueryPart = useQueryStore((s) => s.activeQueryPart)
+  const outerScopeTables = useQueryStore((s) => getLateralOuterScopeTables(s))
   const updateTablePosition = useQueryStore((s) => s.updateTablePosition)
   const updateJoin = useQueryStore((s) => s.updateJoin)
   const addJoin = useQueryStore((s) => s.addJoin)
@@ -218,16 +233,16 @@ export function QueryCanvas({ onStartTour }: QueryCanvasProps) {
     rootQueryState, activeCteId, activeLateralJoinId, activeQueryPart
   )
 
-  const initialNodes = useMemo(() => buildNodes(queryState), []) // eslint-disable-line react-hooks/exhaustive-deps
+  const initialNodes = useMemo(() => buildNodes(queryState, outerScopeTables), []) // eslint-disable-line react-hooks/exhaustive-deps
   const initialEdges = useMemo(() => buildEdges(queryState), []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
 
   useMemo(() => {
-    setNodes(buildNodes(queryState))
+    setNodes(buildNodes(queryState, outerScopeTables))
     setEdges(buildEdges(queryState))
-  }, [queryState.tables, queryState.joins, setNodes, setEdges]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [queryState.tables, queryState.joins, outerScopeTables, setNodes, setEdges]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const onConnect = useCallback(
     (connection: Connection) => {
