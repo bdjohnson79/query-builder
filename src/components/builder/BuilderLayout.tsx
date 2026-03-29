@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { DndContext } from '@dnd-kit/core'
+import { DndContext, DragOverlay, useDndContext } from '@dnd-kit/core'
 import { TableLibrary } from './left-panel/TableLibrary'
 import { QueryCanvas } from './canvas/QueryCanvas'
 import { RightPanel } from './right-panel/RightPanel'
@@ -24,6 +24,27 @@ import { api } from '@/lib/api/client'
 import { Save, FolderOpen, RotateCcw, Database, Copy, HelpCircle, LayoutTemplate, ArrowLeft, Tag, X } from 'lucide-react'
 import type { QueryState } from '@/types/query'
 import type { QueryFolder, SavedQuery } from '@/types/schema'
+
+function TableDragOverlay() {
+  const { active } = useDndContext()
+  if (!active) return null
+
+  const type = active.data.current?.type
+  const name = type === 'table'
+    ? (active.data.current?.table?.displayName ?? active.data.current?.table?.name)
+    : type === 'cte'
+    ? active.data.current?.cte?.name
+    : null
+
+  if (!name) return null
+
+  const isCte = type === 'cte'
+  return (
+    <div className={`pointer-events-none min-w-[140px] rounded border-2 border-dashed px-3 py-1.5 text-sm font-medium shadow-lg opacity-90 ${isCte ? 'border-purple-400 bg-purple-50 text-purple-700' : 'border-blue-400 bg-blue-50 text-blue-700'}`}>
+      {name}
+    </div>
+  )
+}
 
 export function BuilderLayout() {
   return (
@@ -164,6 +185,9 @@ function BuilderLayoutInner() {
           <a href="/admin/schema" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
             Schema Admin
           </a>
+          <a href="/help" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
+            Help
+          </a>
           <Button variant="outline" size="sm" onClick={() => setSavedQueriesOpen(true)}>
             <FolderOpen className="mr-1 h-3.5 w-3.5" />
             Load
@@ -197,6 +221,7 @@ function BuilderLayoutInner() {
 
       {/* Three-column layout */}
       <DndContext>
+        <DragOverlay dropAnimation={null}><TableDragOverlay /></DragOverlay>
         <div className="flex flex-1 overflow-hidden">
           {/* Left Panel */}
           <div className="w-72 shrink-0 overflow-hidden border-r bg-background">

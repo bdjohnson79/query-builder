@@ -1,5 +1,5 @@
 'use client'
-import { memo, useCallback, useState } from 'react'
+import { memo, useCallback, useState, useRef } from 'react'
 import { Handle, Position, type NodeProps } from 'reactflow'
 import { X, Key, ChevronDown, ChevronRight, Braces } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -20,6 +20,8 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
   const toggleColumn = useQueryStore((s) => s.toggleColumn)
   const removeTable = useQueryStore((s) => s.removeTable)
   const updateTableAlias = useQueryStore((s) => s.updateTableAlias)
+  const nudgeOverlappingTables = useQueryStore((s) => s.nudgeOverlappingTables)
+  const nodeRef = useRef<HTMLDivElement>(null)
   const builtinStructures = useJsonStructureStore((s) => s.builtinStructures)
   const structures        = useJsonStructureStore((s) => s.structures)
 
@@ -53,7 +55,19 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
   const [expandedJsonb, setExpandedJsonb] = useState<Record<string, boolean>>({})
 
   const toggleJsonbExpand = (colName: string) => {
-    setExpandedJsonb((prev) => ({ ...prev, [colName]: !prev[colName] }))
+    setExpandedJsonb((prev) => {
+      const next = { ...prev, [colName]: !prev[colName] }
+      if (next[colName]) {
+        // Expanding — after the DOM repaints with the new rows, nudge any
+        // overlapping sibling nodes to the right so they don't overlap.
+        requestAnimationFrame(() => {
+          if (nodeRef.current) {
+            nudgeOverlappingTables(instance.id, nodeRef.current.offsetWidth)
+          }
+        })
+      }
+      return next
+    })
   }
 
   const isJsonbPathSelected = useCallback(
@@ -94,7 +108,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
   const handleColor = isCte ? '!border-purple-400' : '!border-blue-400'
 
   return (
-    <div className="min-w-[140px] rounded border border-border bg-card shadow-sm">
+    <div ref={nodeRef} className="min-w-[140px] rounded border border-border bg-card shadow-sm">
       {/* Header */}
       <div className={`flex items-center justify-between rounded-t ${headerBg} px-2 py-1 text-white`}>
         <div className="min-w-0">
@@ -149,7 +163,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
           return (
             <div key={col.id}>
               <div
-                className="relative flex items-center gap-1.5 px-2 py-0.5 hover:bg-muted/50"
+                className="nodrag relative flex items-center gap-1.5 px-2 py-0.5 hover:bg-muted/50"
                 onMouseDown={(e) => e.stopPropagation()}
               >
                 {/* Left handle for join target */}
@@ -213,16 +227,16 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
                 return (
                   <div
                     key={opt.path}
-                    className="flex items-center gap-1.5 bg-blue-50/50 pl-8 pr-2 py-0.5 hover:bg-blue-50"
+                    className="nodrag flex items-center gap-1.5 bg-blue-50/50 pl-8 pr-2 py-0.5 hover:bg-blue-50"
                     onMouseDown={(e) => e.stopPropagation()}
                   >
                     <Checkbox
                       checked={pathSelected}
                       onCheckedChange={() => handleJsonbPathToggle(col, opt.path, opt.pgExpression)}
-                      className="h-2.5 w-2.5"
+                      className="h-3 w-3"
                     />
-                    <span className="text-[9px] text-blue-700 truncate flex-1">{opt.label}</span>
-                    <span className="text-[8px] text-muted-foreground shrink-0">{opt.valueType}</span>
+                    <span className="text-[10px] text-blue-700 truncate flex-1">{opt.label}</span>
+                    <span className="text-[9px] text-muted-foreground shrink-0">{opt.valueType}</span>
                   </div>
                 )
               })}

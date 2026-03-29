@@ -36,6 +36,7 @@ interface QueryStore {
   addTable: (table: TableInstance) => void
   removeTable: (instanceId: string) => void
   updateTablePosition: (instanceId: string, position: { x: number; y: number }) => void
+  nudgeOverlappingTables: (instanceId: string, expandedWidth: number) => void
   updateTableAlias: (instanceId: string, newAlias: string) => void
 
   // Join actions
@@ -198,6 +199,39 @@ export const useQueryStore = create<QueryStore>()(
         return { queryState: next }
       }),
 
+    nudgeOverlappingTables: (instanceId, expandedWidth) =>
+      set((s) => {
+        const active = getActiveQueryState(s)
+        const thisNode = active.tables.find((t) => t.id === instanceId)
+        if (!thisNode) return s
+
+        const PADDING = 24
+        const rightEdge = thisNode.position.x + expandedWidth + PADDING
+
+        const anyOverlap = active.tables.some(
+          (t) => t.id !== instanceId && t.position.x > thisNode.position.x && t.position.x < rightEdge
+        )
+        if (!anyOverlap) return s
+
+        const tables = active.tables.map((t) => {
+          if (t.id === instanceId) return t
+          if (t.position.x > thisNode.position.x && t.position.x < rightEdge) {
+            return { ...t, position: { ...t.position, x: rightEdge } }
+          }
+          return t
+        })
+
+        // Position-only update — same pattern as updateTablePosition, skip rebuildSql
+        const next = { ...active, tables }
+        if (s.activeCteId) {
+          const updatedCtes = s.queryState.ctes.map((c) =>
+            c.id === s.activeCteId ? { ...c, queryState: next } : c
+          )
+          return { queryState: { ...s.queryState, ctes: updatedCtes } }
+        }
+        return { queryState: next }
+      }),
+
     updateTableAlias: (instanceId, newAlias) =>
       set((s) => {
         const active = getActiveQueryState(s)
@@ -284,9 +318,13 @@ export const useQueryStore = create<QueryStore>()(
     toggleColumn: (col) =>
       set((s) => {
         const active = getActiveQueryState(s)
-        const exists = active.selectedColumns.find(
-          (c) => c.tableAlias === col.tableAlias && c.columnName === col.columnName
-        )
+        const exists = active.selectedColumns.find((c) => {
+          if (c.tableAlias !== col.tableAlias || c.columnName !== col.columnName) return false
+          // JSONB path columns carry an expression — match on it so multiple paths
+          // from the same column can be selected independently
+          if (col.expression !== undefined) return c.expression === col.expression
+          return c.expression === undefined
+        })
         const next = {
           ...active,
           selectedColumns: exists

@@ -119,6 +119,9 @@ function SchemaAdminInner() {
           <a href="/admin/json-structures" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
             JSON Structures
           </a>
+          <a href="/help" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
+            Help
+          </a>
           <a href="/builder" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
             ← Query Builder
           </a>
