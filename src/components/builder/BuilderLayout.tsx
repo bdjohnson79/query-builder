@@ -21,7 +21,9 @@ import { ToastProvider } from '@/components/ui/toast'
 import { useQueryStore } from '@/store/queryStore'
 import { useJsonStructureStore } from '@/store/jsonStructureStore'
 import { api } from '@/lib/api/client'
-import { Save, FolderOpen, RotateCcw, Database, Copy, HelpCircle, LayoutTemplate, ArrowLeft, Tag, X, FileDown, FileUp } from 'lucide-react'
+import { Save, FolderOpen, RotateCcw, Database, Copy, HelpCircle, LayoutTemplate, ArrowLeft, Tag, X, FileDown, FileUp, ChevronsLeft, ChevronsRight } from 'lucide-react'
+import { usePanelResize } from '@/hooks/usePanelResize'
+import { UnionPartSwitcher } from './UnionPartSwitcher'
 import type { QueryState } from '@/types/query'
 import type { QueryFolder, SavedQuery } from '@/types/schema'
 
@@ -64,8 +66,24 @@ function BuilderLayoutInner() {
   const stopEditingCte = useQueryStore((s) => s.stopEditingCte)
   const activeCte = activeCteId ? queryState.ctes.find((c) => c.id === activeCteId) : null
 
+  const activeQueryPart = useQueryStore((s) => s.activeQueryPart)
+  const activeLateralJoinId = useQueryStore((s) => s.activeLateralJoinId)
+  const stopEditingLateralJoin = useQueryStore((s) => s.stopEditingLateralJoin)
+  const activeLateralJoin = activeLateralJoinId
+    ? (queryState.joins.find((j) => j.id === activeLateralJoinId) ??
+       queryState.unionQuery?.queryState.joins.find((j) => j.id === activeLateralJoinId))
+    : null
+
   const loadStructures = useJsonStructureStore((s) => s.loadStructures)
   useEffect(() => { loadStructures() }, [loadStructures])
+
+  const {
+    leftWidth, rightWidth,
+    leftVisible, rightVisible,
+    isDragging,
+    onLeftDividerMouseDown, onRightDividerMouseDown,
+    toggleLeft, toggleRight,
+  } = usePanelResize()
 
   const [templatesOpen, setTemplatesOpen] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
@@ -259,17 +277,40 @@ function BuilderLayoutInner() {
         </div>
       </nav>
 
+      {/* UNION part switcher */}
+      <UnionPartSwitcher />
+
       {/* Three-column layout */}
       <DndContext>
         <DragOverlay dropAnimation={null}><TableDragOverlay /></DragOverlay>
         <div className="flex flex-1 overflow-hidden">
           {/* Left Panel */}
-          <div className="w-72 shrink-0 overflow-hidden border-r bg-background">
+          <div
+            className="shrink-0 overflow-hidden border-r bg-background"
+            style={{ width: leftWidth, transition: isDragging ? 'none' : 'width 150ms ease' }}
+          >
             <TableLibrary />
           </div>
 
+          {/* Left divider + toggle */}
+          <div className="relative z-10 flex-none select-none" style={{ width: 8 }}>
+            {leftVisible && (
+              <div
+                className="absolute inset-y-0 left-0 w-1 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors"
+                onMouseDown={onLeftDividerMouseDown}
+              />
+            )}
+            <button
+              className="absolute top-1/2 -translate-y-1/2 left-0 z-20 flex h-8 w-4 items-center justify-center rounded-r border border-l-0 bg-background text-muted-foreground hover:text-foreground hover:bg-muted shadow-sm"
+              onClick={toggleLeft}
+              title={leftVisible ? 'Hide table library' : 'Show table library'}
+            >
+              {leftVisible ? <ChevronsLeft className="h-3 w-3" /> : <ChevronsRight className="h-3 w-3" />}
+            </button>
+          </div>
+
           {/* Canvas column */}
-          <div className="relative flex flex-col flex-1 overflow-hidden">
+          <div className="relative flex flex-col flex-1 overflow-hidden min-w-0">
             {/* CTE editing banner */}
             {activeCte && (
               <div className="flex shrink-0 items-center gap-3 border-b bg-blue-50 px-3 py-1.5">
@@ -293,14 +334,56 @@ function BuilderLayoutInner() {
               </div>
             )}
 
-            {/* Canvas with optional blue tint overlay for CTE mode */}
-            <div className={`relative flex-1 overflow-hidden${activeCte ? ' ring-2 ring-blue-400 ring-inset' : ''}`}>
+            {/* LATERAL editing banner */}
+            {activeLateralJoin && !activeCte && (
+              <div className="flex shrink-0 items-center gap-3 border-b bg-cyan-50 px-3 py-1.5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs gap-1"
+                  onClick={stopEditingLateralJoin}
+                >
+                  <ArrowLeft className="h-3 w-3" />
+                  {activeQueryPart === 'union' ? 'Part 2' : 'Main query'}
+                </Button>
+                <span className="text-xs text-cyan-700">
+                  Editing LATERAL subquery: <span className="font-semibold">{activeLateralJoin.lateralAlias ?? 'lateral_sub'}</span>
+                </span>
+              </div>
+            )}
+
+            {/* Canvas with optional ring overlay for editing modes */}
+            <div className={`relative flex-1 overflow-hidden${
+              activeCte ? ' ring-2 ring-blue-400 ring-inset' :
+              activeLateralJoin ? ' ring-2 ring-cyan-400 ring-inset' :
+              activeQueryPart === 'union' ? ' ring-2 ring-green-400 ring-inset' : ''
+            }`}>
               <QueryCanvas onStartTour={() => setOnboardingOpen(true)} />
             </div>
           </div>
 
+          {/* Right divider + toggle */}
+          <div className="relative z-10 flex-none select-none" style={{ width: 8 }}>
+            {rightVisible && (
+              <div
+                className="absolute inset-y-0 right-0 w-1 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors"
+                onMouseDown={onRightDividerMouseDown}
+              />
+            )}
+            <button
+              className="absolute top-1/2 -translate-y-1/2 right-0 z-20 flex h-8 w-4 items-center justify-center rounded-l border border-r-0 bg-background text-muted-foreground hover:text-foreground hover:bg-muted shadow-sm"
+              onClick={toggleRight}
+              title={rightVisible ? 'Hide right panel' : 'Show right panel'}
+            >
+              {rightVisible ? <ChevronsRight className="h-3 w-3" /> : <ChevronsLeft className="h-3 w-3" />}
+            </button>
+          </div>
+
           {/* Right Panel */}
-          <div className="w-96 shrink-0 overflow-hidden min-w-0">
+          <div
+            className="shrink-0 overflow-hidden bg-background"
+            style={{ width: rightWidth, transition: isDragging ? 'none' : 'width 150ms ease' }}
+          >
             <RightPanel />
           </div>
         </div>

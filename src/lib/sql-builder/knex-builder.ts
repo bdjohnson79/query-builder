@@ -88,7 +88,7 @@ function tableRef(schemaName: string, tableName: string, omitSchema: boolean): s
 // ---------------------------------------------------------------------------
 
 function buildRawSql(state: QueryState, omitTrailer = false): string {
-  const { tables, joins, selectedColumns, where, groupBy, having, orderBy, limit, offset, distinct, windowFunctions, ctes, timescaleBucket, gapfillStrategies, unionAllRawSql } = state
+  const { tables, joins, selectedColumns, where, groupBy, having, orderBy, limit, offset, distinct, windowFunctions, ctes, timescaleBucket, gapfillStrategies, unionQuery } = state
 
   if (tables.length === 0) return '-- Drag a table onto the canvas to start'
 
@@ -178,6 +178,16 @@ function buildRawSql(state: QueryState, omitTrailer = false): string {
 
       const j = pending.splice(idx, 1)[0]
 
+      // LATERAL joins emit a subquery instead of a table reference
+      if (j.type === 'LATERAL' && j.lateralSubquery) {
+        const lateralAlias = j.lateralAlias ?? 'lateral_sub'
+        const subSql = buildRawSql(j.lateralSubquery, true)
+        const onClause = j.onExpression?.trim() || 'TRUE'
+        parts.push(`LEFT JOIN LATERAL (\n${subSql}\n) AS ${qi(lateralAlias)} ON ${onClause}`)
+        inScope.add(lateralAlias)
+        continue
+      }
+
       // Determine which side is "new" (not yet in scope)
       const rightIsNew = !inScope.has(j.rightTableAlias)
       const newAlias = rightIsNew ? j.rightTableAlias : j.leftTableAlias
@@ -238,10 +248,13 @@ function buildRawSql(state: QueryState, omitTrailer = false): string {
   if (limit !== null)  trailer.push(`LIMIT ${limit}`)
   if (offset !== null) trailer.push(`OFFSET ${offset}`)
 
-  // UNION ALL branch — append before the trailer so ORDER BY covers both branches
-  if (unionAllRawSql?.trim()) {
+  // UNION branch — append before the trailer so ORDER BY covers both branches
+  if (unionQuery) {
+    const branchSql = unionQuery.rawSql?.trim()
+      ? unionQuery.rawSql.trim()
+      : buildRawSql(unionQuery.queryState, true)
     const trailerStr = trailer.length > 0 ? '\n' + trailer.join('\n') : ''
-    return body + '\nUNION ALL\n' + unionAllRawSql.trim() + trailerStr
+    return body + `\n${unionQuery.operator}\n` + branchSql + trailerStr
   }
 
   if (omitTrailer) return body
@@ -328,6 +341,7 @@ function joinTypeToSql(type: QueryState['joins'][0]['type']): string {
     case 'RIGHT': return 'RIGHT JOIN'
     case 'FULL OUTER': return 'FULL OUTER JOIN'
     case 'CROSS': return 'CROSS JOIN'
+    case 'LATERAL': return 'LEFT JOIN LATERAL'
     default: return 'INNER JOIN'
   }
 }

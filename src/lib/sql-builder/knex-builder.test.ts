@@ -703,6 +703,7 @@ describe('CTEs', () => {
       name: cteName,
       recursive: false,
       queryState: innerState,
+      outputColumns: [],
     }
     const state = makeState({
       tables: [makeTable({ alias: outerAlias, tableName: cteName })],
@@ -722,6 +723,7 @@ describe('CTEs', () => {
       name: cteName,
       recursive: true,
       queryState: makeState({ tables: [innerTable], isSubquery: true }),
+      outputColumns: [],
     }
     const state = makeState({
       tables: [makeTable({ alias, tableName: cteName })],

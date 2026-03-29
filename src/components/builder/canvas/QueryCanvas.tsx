@@ -7,7 +7,6 @@ import ReactFlow, {
   useNodesState,
   useEdgesState,
   useReactFlow,
-  addEdge,
   type Connection,
   type Edge,
   type Node,
@@ -17,12 +16,15 @@ import { useDndMonitor, useDroppable } from '@dnd-kit/core'
 import { useQueryStore } from '@/store/queryStore'
 import { TableNode } from './TableNode'
 import { JoinEdge } from './JoinEdge'
-import type { TableInstance, JoinDef, CTEDef } from '@/types/query'
+import { LateralSubqueryNode, type LateralNodeData } from './LateralSubqueryNode'
+import type { TableInstance, JoinDef, CTEDef, QueryState } from '@/types/query'
 import type { AppTable, AppColumn, AppSchema } from '@/types/schema'
 import { cn } from '@/lib/utils'
 import { CanvasEmptyState } from './CanvasEmptyState'
 
-const nodeTypes = { tableNode: TableNode }
+const LATERAL_NODE_PREFIX = 'lateral__'
+
+const nodeTypes = { tableNode: TableNode, lateral: LateralSubqueryNode }
 const edgeTypes = { joinEdge: JoinEdge }
 
 function tableToNode(instance: TableInstance): Node {
@@ -31,6 +33,26 @@ function tableToNode(instance: TableInstance): Node {
     type: 'tableNode',
     position: instance.position,
     data: { instance },
+  }
+}
+
+function lateralToNode(join: JoinDef, index: number): Node {
+  const cols = join.lateralSubquery?.selectedColumns.map((sc) => ({
+    name: sc.alias ?? sc.columnName,
+    pgType: 'text',
+  })) ?? []
+
+  const data: LateralNodeData = {
+    joinId: join.id,
+    lateralAlias: join.lateralAlias ?? 'lateral_sub',
+    outputColumns: cols,
+  }
+
+  return {
+    id: `${LATERAL_NODE_PREFIX}${join.id}`,
+    type: 'lateral',
+    position: join.canvasPosition ?? { x: 600 + index * 220, y: 100 },
+    data,
   }
 }
 
@@ -48,17 +70,57 @@ function joinToEdge(join: JoinDef, tables: TableInstance[]): Edge {
   }
 }
 
+function buildNodes(qs: QueryState): Node[] {
+  const tableNodes = qs.tables.map(tableToNode)
+  const lateralNodes = qs.joins
+    .filter((j) => j.type === 'LATERAL')
+    .map((j, i) => lateralToNode(j, i))
+  return [...tableNodes, ...lateralNodes]
+}
+
+function buildEdges(qs: QueryState): Edge[] {
+  return qs.joins
+    .filter((j) => j.type !== 'LATERAL')
+    .map((j) => joinToEdge(j, qs.tables))
+}
+
+// Resolve the active queryState for the canvas based on editing modes
+function resolveCanvasQueryState(
+  rootQueryState: QueryState,
+  activeCteId: string | null,
+  activeLateralJoinId: string | null,
+  activeQueryPart: 'main' | 'union',
+): QueryState {
+  if (activeCteId) {
+    return rootQueryState.ctes.find((c) => c.id === activeCteId)?.queryState ?? rootQueryState
+  }
+  if (activeLateralJoinId) {
+    const rootJoin = rootQueryState.joins.find((j) => j.id === activeLateralJoinId)
+    if (rootJoin?.lateralSubquery) return rootJoin.lateralSubquery
+    const unionJoin = rootQueryState.unionQuery?.queryState.joins.find(
+      (j) => j.id === activeLateralJoinId
+    )
+    if (unionJoin?.lateralSubquery) return unionJoin.lateralSubquery
+  }
+  if (activeQueryPart === 'union' && rootQueryState.unionQuery) {
+    return rootQueryState.unionQuery.queryState
+  }
+  return rootQueryState
+}
+
 // Handles the dnd-kit drop event from *inside* ReactFlow so we can use
 // screenToFlowPosition to convert cursor coords → flow coords.
 function DropHandler() {
   const { screenToFlowPosition } = useReactFlow()
   const rootQueryState = useQueryStore((s) => s.queryState)
   const activeCteId = useQueryStore((s) => s.activeCteId)
+  const activeLateralJoinId = useQueryStore((s) => s.activeLateralJoinId)
+  const activeQueryPart = useQueryStore((s) => s.activeQueryPart)
   const addTable = useQueryStore((s) => s.addTable)
 
-  const queryState = activeCteId
-    ? (rootQueryState.ctes.find((c) => c.id === activeCteId)?.queryState ?? rootQueryState)
-    : rootQueryState
+  const queryState = resolveCanvasQueryState(
+    rootQueryState, activeCteId, activeLateralJoinId, activeQueryPart
+  )
 
   useDndMonitor({
     onDragEnd(event) {
@@ -66,7 +128,6 @@ function DropHandler() {
       if (over?.id !== 'canvas') return
 
       // Convert the cursor position at drop time to ReactFlow canvas coordinates.
-      // activatorEvent.clientX/Y is where the drag started; delta is total movement.
       const activator = event.activatorEvent as PointerEvent | MouseEvent
       const cursorX = activator.clientX + event.delta.x
       const cursorY = activator.clientY + event.delta.y
@@ -147,30 +208,26 @@ interface QueryCanvasProps {
 export function QueryCanvas({ onStartTour }: QueryCanvasProps) {
   const rootQueryState = useQueryStore((s) => s.queryState)
   const activeCteId = useQueryStore((s) => s.activeCteId)
-  const queryState = activeCteId
-    ? (rootQueryState.ctes.find((c) => c.id === activeCteId)?.queryState ?? rootQueryState)
-    : rootQueryState
+  const activeLateralJoinId = useQueryStore((s) => s.activeLateralJoinId)
+  const activeQueryPart = useQueryStore((s) => s.activeQueryPart)
   const updateTablePosition = useQueryStore((s) => s.updateTablePosition)
+  const updateJoin = useQueryStore((s) => s.updateJoin)
   const addJoin = useQueryStore((s) => s.addJoin)
 
-  const initialNodes = useMemo(
-    () => queryState.tables.map(tableToNode),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
+  const queryState = resolveCanvasQueryState(
+    rootQueryState, activeCteId, activeLateralJoinId, activeQueryPart
   )
-  const initialEdges = useMemo(
-    () => queryState.joins.map((j) => joinToEdge(j, queryState.tables)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
-  )
+
+  const initialNodes = useMemo(() => buildNodes(queryState), []) // eslint-disable-line react-hooks/exhaustive-deps
+  const initialEdges = useMemo(() => buildEdges(queryState), []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
 
   useMemo(() => {
-    setNodes(queryState.tables.map(tableToNode))
-    setEdges(queryState.joins.map((j) => joinToEdge(j, queryState.tables)))
-  }, [queryState.tables, queryState.joins, setNodes, setEdges])
+    setNodes(buildNodes(queryState))
+    setEdges(buildEdges(queryState))
+  }, [queryState.tables, queryState.joins, setNodes, setEdges]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -192,9 +249,15 @@ export function QueryCanvas({ onStartTour }: QueryCanvasProps) {
 
   const onNodeDragStop = useCallback(
     (_: React.MouseEvent, node: Node) => {
-      updateTablePosition(node.id, node.position)
+      if (node.id.startsWith(LATERAL_NODE_PREFIX)) {
+        // Persist position for lateral node via the join record
+        const joinId = node.id.slice(LATERAL_NODE_PREFIX.length)
+        updateJoin(joinId, { canvasPosition: node.position })
+      } else {
+        updateTablePosition(node.id, node.position)
+      }
     },
-    [updateTablePosition]
+    [updateTablePosition, updateJoin]
   )
 
   const { setNodeRef, isOver } = useDroppable({ id: 'canvas' })
@@ -219,7 +282,7 @@ export function QueryCanvas({ onStartTour }: QueryCanvasProps) {
         {/* DropHandler lives inside ReactFlow so it can call useReactFlow() */}
         <DropHandler />
       </ReactFlow>
-      {queryState.tables.length === 0 && (
+      {queryState.tables.length === 0 && queryState.joins.filter(j => j.type === 'LATERAL').length === 0 && (
         <CanvasEmptyState onStartTour={onStartTour} />
       )}
     </div>

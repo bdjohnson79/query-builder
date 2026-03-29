@@ -20,6 +20,7 @@ import {
   type GrafanaPanelType,
   type TimescaleBucket,
   type GapfillStrategy,
+  type UnionOperator,
 } from '@/types/query'
 
 interface QueryStore {
@@ -31,6 +32,19 @@ interface QueryStore {
   activeCteId: string | null
   startEditingCte: (id: string) => void
   stopEditingCte: () => void
+
+  // UNION query part switching (UI state — not persisted)
+  activeQueryPart: 'main' | 'union'
+  setActiveQueryPart: (part: 'main' | 'union') => void
+  addUnionBranch: (operator: UnionOperator) => void
+  updateUnionBranchOperator: (operator: UnionOperator) => void
+  removeUnionBranch: () => void
+
+  // LATERAL join editing mode (UI state — not persisted)
+  activeLateralJoinId: string | null
+  startEditingLateralJoin: (id: string) => void
+  stopEditingLateralJoin: () => void
+  addLateralJoin: (lateralAlias: string) => void
 
   // Table actions
   addTable: (table: TableInstance) => void
@@ -69,9 +83,6 @@ interface QueryStore {
   updateCte: (id: string, updates: Partial<CTEDef>) => void
   removeCte: (id: string) => void
 
-  // UNION ALL raw SQL branch
-  setUnionAllRawSql: (sql: string | undefined) => void
-
   // JSONB mappings (structure assignments)
   setJsonbMapping: (tableAlias: string, columnName: string, structureId: number) => void
   clearJsonbMapping: (tableAlias: string, columnName: string) => void
@@ -107,15 +118,31 @@ function rebuildSql(state: QueryState): string {
 }
 
 // ---------------------------------------------------------------------------
-// CTE editing mode helpers
-// When activeCteId is set, all query mutations operate on the CTE's queryState
-// rather than the root queryState. The SQL preview always shows the full query.
+// Editing mode helpers
+// Priority chain for mutations:
+//   1. activeCteId set → mutate that CTE's nested queryState
+//   2. activeLateralJoinId set → mutate that join's lateralSubquery
+//   3. activeQueryPart === 'union' → mutate the unionQuery branch's queryState
+//   4. Default → mutate root queryState
+// The SQL preview always rebuilds from the full root queryState.
 // ---------------------------------------------------------------------------
 
 function getActiveQueryState(s: QueryStore): QueryState {
   if (s.activeCteId) {
     const cte = s.queryState.ctes.find((c) => c.id === s.activeCteId)
     if (cte) return cte.queryState
+  }
+  if (s.activeLateralJoinId) {
+    // Search root joins first, then union branch joins
+    const rootJoin = s.queryState.joins.find((j) => j.id === s.activeLateralJoinId)
+    if (rootJoin?.lateralSubquery) return rootJoin.lateralSubquery
+    const unionJoin = s.queryState.unionQuery?.queryState.joins.find(
+      (j) => j.id === s.activeLateralJoinId
+    )
+    if (unionJoin?.lateralSubquery) return unionJoin.lateralSubquery
+  }
+  if (s.activeQueryPart === 'union' && s.queryState.unionQuery) {
+    return s.queryState.unionQuery.queryState
   }
   return s.queryState
 }
@@ -128,6 +155,39 @@ function setActiveQueryState(s: QueryStore, next: QueryState): Partial<QueryStor
     const updatedRoot = { ...s.queryState, ctes: updatedCtes }
     return { queryState: updatedRoot, generatedSql: rebuildSql(updatedRoot) }
   }
+  if (s.activeLateralJoinId) {
+    // Update the lateral join's subquery, whether it's on root or union branch
+    const updateJoins = (joins: QueryState['joins']) =>
+      joins.map((j) =>
+        j.id === s.activeLateralJoinId ? { ...j, lateralSubquery: next } : j
+      )
+    const rootHasJoin = s.queryState.joins.some((j) => j.id === s.activeLateralJoinId)
+    if (rootHasJoin) {
+      const updatedRoot = { ...s.queryState, joins: updateJoins(s.queryState.joins) }
+      return { queryState: updatedRoot, generatedSql: rebuildSql(updatedRoot) }
+    }
+    const unionHasJoin = s.queryState.unionQuery?.queryState.joins.some(
+      (j) => j.id === s.activeLateralJoinId
+    )
+    if (unionHasJoin && s.queryState.unionQuery) {
+      const updatedUnionQs = {
+        ...s.queryState.unionQuery.queryState,
+        joins: updateJoins(s.queryState.unionQuery.queryState.joins),
+      }
+      const updatedRoot = {
+        ...s.queryState,
+        unionQuery: { ...s.queryState.unionQuery, queryState: updatedUnionQs },
+      }
+      return { queryState: updatedRoot, generatedSql: rebuildSql(updatedRoot) }
+    }
+  }
+  if (s.activeQueryPart === 'union' && s.queryState.unionQuery) {
+    const updatedRoot = {
+      ...s.queryState,
+      unionQuery: { ...s.queryState.unionQuery, queryState: next },
+    }
+    return { queryState: updatedRoot, generatedSql: rebuildSql(updatedRoot) }
+  }
   return { queryState: next, generatedSql: rebuildSql(next) }
 }
 
@@ -138,9 +198,53 @@ export const useQueryStore = create<QueryStore>()(
     generatedSql: '-- Drag a table onto the canvas to start',
     userEditedSql: null,
     activeCteId: null,
+    activeQueryPart: 'main',
+    activeLateralJoinId: null,
 
     startEditingCte: (id) => set({ activeCteId: id, userEditedSql: null }),
     stopEditingCte: () => set({ activeCteId: null }),
+
+    setActiveQueryPart: (part) => set({ activeQueryPart: part }),
+
+    addUnionBranch: (operator) =>
+      set((s) => {
+        if (s.queryState.unionQuery) return s
+        const next = { ...s.queryState, unionQuery: { operator, queryState: emptyQueryState() } }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
+    updateUnionBranchOperator: (operator) =>
+      set((s) => {
+        if (!s.queryState.unionQuery) return s
+        const next = { ...s.queryState, unionQuery: { ...s.queryState.unionQuery, operator } }
+        return { queryState: next, generatedSql: rebuildSql(next) }
+      }),
+
+    removeUnionBranch: () =>
+      set((s) => {
+        const next = { ...s.queryState, unionQuery: undefined }
+        return { queryState: next, generatedSql: rebuildSql(next), activeQueryPart: 'main' as const }
+      }),
+
+    startEditingLateralJoin: (id) => set({ activeLateralJoinId: id, userEditedSql: null }),
+    stopEditingLateralJoin: () => set({ activeLateralJoinId: null }),
+
+    addLateralJoin: (lateralAlias) =>
+      set((s) => {
+        const active = getActiveQueryState(s)
+        const join: JoinDef = {
+          id: crypto.randomUUID(),
+          type: 'LATERAL',
+          leftTableAlias: '',
+          leftColumn: '',
+          rightTableAlias: lateralAlias,
+          rightColumn: '',
+          lateralAlias,
+          lateralSubquery: emptyQueryState(),
+        }
+        const next = { ...active, joins: [...active.joins, join] }
+        return setActiveQueryState(s, next)
+      }),
 
     addTable: (table) =>
       set((s) => {
@@ -196,6 +300,20 @@ export const useQueryStore = create<QueryStore>()(
           )
           return { queryState: { ...s.queryState, ctes: updatedCtes } }
         }
+        if (s.activeLateralJoinId) {
+          const updateJoins = (joins: QueryState['joins']) =>
+            joins.map((j) => j.id === s.activeLateralJoinId ? { ...j, lateralSubquery: next } : j)
+          if (s.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
+            return { queryState: { ...s.queryState, joins: updateJoins(s.queryState.joins) } }
+          }
+          if (s.queryState.unionQuery?.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
+            const updatedUnionQs = { ...s.queryState.unionQuery.queryState, joins: updateJoins(s.queryState.unionQuery.queryState.joins) }
+            return { queryState: { ...s.queryState, unionQuery: { ...s.queryState.unionQuery, queryState: updatedUnionQs } } }
+          }
+        }
+        if (s.activeQueryPart === 'union' && s.queryState.unionQuery) {
+          return { queryState: { ...s.queryState, unionQuery: { ...s.queryState.unionQuery, queryState: next } } }
+        }
         return { queryState: next }
       }),
 
@@ -228,6 +346,20 @@ export const useQueryStore = create<QueryStore>()(
             c.id === s.activeCteId ? { ...c, queryState: next } : c
           )
           return { queryState: { ...s.queryState, ctes: updatedCtes } }
+        }
+        if (s.activeLateralJoinId) {
+          const updateJoins = (joins: QueryState['joins']) =>
+            joins.map((j) => j.id === s.activeLateralJoinId ? { ...j, lateralSubquery: next } : j)
+          if (s.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
+            return { queryState: { ...s.queryState, joins: updateJoins(s.queryState.joins) } }
+          }
+          if (s.queryState.unionQuery?.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
+            const updatedUnionQs = { ...s.queryState.unionQuery.queryState, joins: updateJoins(s.queryState.unionQuery.queryState.joins) }
+            return { queryState: { ...s.queryState, unionQuery: { ...s.queryState.unionQuery, queryState: updatedUnionQs } } }
+          }
+        }
+        if (s.activeQueryPart === 'union' && s.queryState.unionQuery) {
+          return { queryState: { ...s.queryState, unionQuery: { ...s.queryState.unionQuery, queryState: next } } }
         }
         return { queryState: next }
       }),
@@ -463,12 +595,6 @@ export const useQueryStore = create<QueryStore>()(
         return { queryState: next, generatedSql: rebuildSql(next), activeCteId: s.activeCteId === id ? null : s.activeCteId }
       }),
 
-    setUnionAllRawSql: (sql) =>
-      set((s) => {
-        const next = { ...s.queryState, unionAllRawSql: sql }
-        return { queryState: next, generatedSql: rebuildSql(next) }
-      }),
-
     setJsonbMapping: (tableAlias, columnName, structureId) =>
       set((s) => {
         const active = getActiveQueryState(s)
@@ -625,7 +751,7 @@ export const useQueryStore = create<QueryStore>()(
       set({ userEditedSql: sql }),
 
     loadQueryState: (state) =>
-      set({ queryState: state, generatedSql: rebuildSql(state), userEditedSql: null, activeCteId: null }),
+      set({ queryState: state, generatedSql: rebuildSql(state), userEditedSql: null, activeCteId: null, activeQueryPart: 'main', activeLateralJoinId: null }),
 
     resetQuery: () =>
       set({
@@ -633,6 +759,8 @@ export const useQueryStore = create<QueryStore>()(
         generatedSql: '-- Drag a table onto the canvas to start',
         userEditedSql: null,
         activeCteId: null,
+        activeQueryPart: 'main',
+        activeLateralJoinId: null,
       }),
   })),
   {
@@ -650,6 +778,12 @@ export const useQueryStore = create<QueryStore>()(
         if (!state.queryState.jsonbArrayUnnestings) state.queryState.jsonbArrayUnnestings = []
         if (state.queryState.isGrafanaVariable === undefined) state.queryState.isGrafanaVariable = false
         if (!state.queryState.gapfillStrategies) state.queryState.gapfillStrategies = []
+        // Migrate old unionAllRawSql → drop it (replaced by structured unionQuery)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if ((state.queryState as any).unionAllRawSql !== undefined) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          delete (state.queryState as any).unionAllRawSql
+        }
         // Backfill CTEDef.outputColumns for old persisted states
         if (state.queryState.ctes) {
           state.queryState.ctes = state.queryState.ctes.map((c) =>

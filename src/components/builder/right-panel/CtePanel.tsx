@@ -4,7 +4,7 @@ import { useQueryStore } from '@/store/queryStore'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { X, Plus, Pencil, Code2, Eye, ChevronDown, ChevronRight } from 'lucide-react'
+import { X, Plus, Pencil, Code2, Eye } from 'lucide-react'
 import { emptyQueryState } from '@/types/query'
 import type { CTEDef, CteOutputColumn } from '@/types/query'
 
@@ -165,61 +165,6 @@ function CteEditForm({ cte }: { cte: CTEDef }) {
   )
 }
 
-// ── UNION ALL section ────────────────────────────────────────────────────────
-
-function UnionAllSection() {
-  const unionAllRawSql = useQueryStore((s) => s.queryState.unionAllRawSql)
-  const setUnionAllRawSql = useQueryStore((s) => s.setUnionAllRawSql)
-  const [open, setOpen] = useState(!!unionAllRawSql)
-
-  const hasContent = !!unionAllRawSql
-
-  return (
-    <div className="rounded-md border p-2 space-y-2">
-      <button
-        className="flex items-center justify-between w-full text-xs font-semibold"
-        onClick={() => setOpen((o) => !o)}
-      >
-        <span>UNION ALL branch</span>
-        <div className="flex items-center gap-1">
-          {hasContent && (
-            <span className="rounded bg-blue-100 text-blue-700 px-1 py-0.5 text-[10px]">
-              active
-            </span>
-          )}
-          {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        </div>
-      </button>
-
-      {open && (
-        <div className="space-y-2">
-          <p className="text-xs text-muted-foreground">
-            Raw SQL appended as a second <code className="font-mono">UNION ALL</code> branch
-            before ORDER BY / LIMIT. Useful for lookback lateral patterns.
-          </p>
-          <textarea
-            className="w-full rounded-md border bg-background px-2 py-1.5 text-xs font-mono resize-y min-h-[100px] focus:outline-none focus:ring-1 focus:ring-ring"
-            value={unionAllRawSql ?? ''}
-            onChange={(e) => setUnionAllRawSql(e.target.value || undefined)}
-            placeholder="SELECT ... FROM ..."
-            spellCheck={false}
-          />
-          {hasContent && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 text-xs text-destructive hover:text-destructive"
-              onClick={() => { setUnionAllRawSql(undefined); setOpen(false) }}
-            >
-              <X className="h-3 w-3 mr-1" /> Remove branch
-            </Button>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
 // ── CTE list item ────────────────────────────────────────────────────────────
 
 function CteListItem({ cte }: { cte: CTEDef }) {
@@ -333,7 +278,6 @@ export function CtePanel() {
         Add CTE
       </Button>
 
-      <UnionAllSection />
     </div>
   )
 }

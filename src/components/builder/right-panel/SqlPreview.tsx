@@ -2,13 +2,19 @@
 import { useState } from 'react'
 import { useQueryStore } from '@/store/queryStore'
 import { Button } from '@/components/ui/button'
-import { Copy, Check, RotateCcw } from 'lucide-react'
+import { Copy, Check, RotateCcw, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { validateUnion } from '@/lib/sql-builder/union-validator'
 
 export function SqlPreview() {
   const generatedSql   = useQueryStore((s) => s.generatedSql)
   const userEditedSql  = useQueryStore((s) => s.userEditedSql)
   const setUserEditedSql = useQueryStore((s) => s.setUserEditedSql)
+  const queryState = useQueryStore((s) => s.queryState)
   const [copied, setCopied]       = useState(false)
+
+  const unionValidation = queryState.unionQuery
+    ? validateUnion(queryState, queryState.unionQuery.queryState)
+    : null
 
   const isManual  = userEditedSql !== null
   const displaySql = isManual ? userEditedSql : generatedSql
@@ -68,8 +74,29 @@ export function SqlPreview() {
         />
       </div>
 
+      {/* UNION validation status */}
+      {unionValidation && (
+        <div className="border-t px-3 py-1.5 shrink-0">
+          {unionValidation.valid ? (
+            <p className="flex items-center gap-1 text-[10px] text-green-700">
+              <CheckCircle2 className="h-3 w-3 shrink-0" />
+              UNION columns match
+            </p>
+          ) : (
+            <div className="space-y-0.5">
+              {unionValidation.warnings.map((w, i) => (
+                <p key={i} className="flex items-start gap-1 text-[10px] text-amber-700">
+                  <AlertTriangle className="h-3 w-3 shrink-0 mt-px" />
+                  {w.message}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Footer hint when not edited */}
-      {!isManual && (
+      {!isManual && !unionValidation && (
         <div className="border-t px-3 py-1.5 shrink-0">
           <p className="text-[10px] text-muted-foreground">
             You can edit the SQL directly — changes are preserved until you click Revert or Reset.

@@ -3,7 +3,15 @@
 import type { JsonbMapping } from './json-structure'
 export type { JsonbMapping }
 
-export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL OUTER' | 'CROSS'
+export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL OUTER' | 'CROSS' | 'LATERAL'
+
+export type UnionOperator = 'UNION ALL' | 'UNION'
+
+export interface UnionBranch {
+  operator: UnionOperator
+  queryState: QueryState
+  rawSql?: string  // when set, overrides queryState in SQL generation (escape hatch for raw SQL)
+}
 
 export type GrafanaPanelType = 'time-series' | 'stat' | 'bar-chart' | 'table' | 'heatmap'
 
@@ -40,6 +48,10 @@ export interface JoinDef {
   rightTableAlias: string
   rightColumn: string
   onExpression?: string  // when set, replaces the generated ON clause entirely
+  // LATERAL join fields (only used when type === 'LATERAL')
+  lateralSubquery?: QueryState
+  lateralAlias?: string
+  canvasPosition?: { x: number; y: number }  // canvas position for the LATERAL node
 }
 
 export interface SelectedColumn {
@@ -150,7 +162,7 @@ export interface QueryState {
   timeColumn?: { tableAlias: string; columnName: string }
   timescaleBucket?: TimescaleBucket
   gapfillStrategies: GapfillStrategy[]
-  unionAllRawSql?: string  // raw SQL appended as UNION ALL branch after the main SELECT body
+  unionQuery?: UnionBranch
 }
 
 export function emptyFilterGroup(): FilterGroup {
@@ -180,6 +192,6 @@ export function emptyQueryState(): QueryState {
     timeColumn: undefined,
     timescaleBucket: undefined,
     gapfillStrategies: [],
-    unionAllRawSql: undefined,
+    unionQuery: undefined,
   }
 }

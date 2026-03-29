@@ -212,7 +212,7 @@ function makeHelpers(schemaStore: {
 }
 
 // ---------------------------------------------------------------------------
-// Standard time-series: tags CTE (visual) + event+tags main + unionAllRawSql
+// Standard time-series: tags CTE (visual) + event+tags main + unionQuery (raw SQL lookback)
 // ---------------------------------------------------------------------------
 
 const STANDARD_LOOKBACK_SQL = `SELECT $__timeFrom()::timestamp AS time, t2.description, value
@@ -364,7 +364,7 @@ function buildStandardTimeSeriesState(schemaStore: {
       { tableAlias: 'e', columnName: 'time', direction: 'ASC' },
       { tableAlias: 't', columnName: 'description', direction: 'ASC' },
     ],
-    unionAllRawSql: STANDARD_LOOKBACK_SQL,
+    unionQuery: { operator: 'UNION ALL', queryState: emptyQueryState(), rawSql: STANDARD_LOOKBACK_SQL },
     timeColumn: eventCols.some((c) => c.name === 'time')
       ? { tableAlias: 'e', columnName: 'time' }
       : undefined,
