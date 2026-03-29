@@ -11,7 +11,7 @@ function UnionValidationBadge() {
   const queryState = useQueryStore((s) => s.queryState)
   if (!queryState.unionQuery) return null
 
-  const result = validateUnion(queryState, queryState.unionQuery.queryState)
+  const result = validateUnion(queryState, queryState.unionQuery)
 
   if (result.valid) {
     return (

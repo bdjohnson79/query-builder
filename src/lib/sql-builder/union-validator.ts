@@ -1,4 +1,4 @@
-import type { QueryState } from '@/types/query'
+import type { QueryState, UnionBranch } from '@/types/query'
 
 export interface UnionWarning {
   type: 'count_mismatch' | 'type_mismatch' | 'no_columns'
@@ -23,7 +23,11 @@ function typeCategory(pgType: string): string {
   return 'other'
 }
 
-export function validateUnion(main: QueryState, branch: QueryState): UnionValidationResult {
+export function validateUnion(main: QueryState, unionBranch: UnionBranch): UnionValidationResult {
+  // Raw SQL branches cannot be introspected — skip all validation
+  if (unionBranch.rawSql != null) return { valid: true, warnings: [] }
+
+  const branch = unionBranch.queryState
   const warnings: UnionWarning[] = []
 
   const mainCols = main.selectedColumns

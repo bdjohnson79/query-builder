@@ -13,7 +13,7 @@ export function SqlPreview() {
   const [copied, setCopied]       = useState(false)
 
   const unionValidation = queryState.unionQuery
-    ? validateUnion(queryState, queryState.unionQuery.queryState)
+    ? validateUnion(queryState, queryState.unionQuery)
     : null
 
   const isManual  = userEditedSql !== null
