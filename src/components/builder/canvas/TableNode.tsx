@@ -5,6 +5,7 @@ import { X, Key, ChevronDown, ChevronRight, Braces } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
 import { useQueryStore } from '@/store/queryStore'
+import { getActiveQueryState } from '@/store/queryStore'
 import { useJsonStructureStore } from '@/store/jsonStructureStore'
 import { flattenToPathOptions } from '@/lib/json-structure/infer'
 import type { TableInstance, ColumnMeta, SelectedColumn } from '@/types/query'
@@ -17,9 +18,9 @@ interface TableNodeData {
 
 export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeData>) {
   const { instance, isOuterScope = false } = data
-  const selectedColumns = useQueryStore((s) => s.queryState.selectedColumns)
-  const jsonbMappings = useQueryStore((s) => s.queryState.jsonbMappings)
-  const jsonbExpansions = useQueryStore((s) => s.queryState.jsonbExpansions)
+  const selectedColumns = useQueryStore((s) => getActiveQueryState(s).selectedColumns)
+  const jsonbMappings   = useQueryStore((s) => getActiveQueryState(s).jsonbMappings)
+  const jsonbExpansions = useQueryStore((s) => getActiveQueryState(s).jsonbExpansions ?? [])
   const toggleColumn = useQueryStore((s) => s.toggleColumn)
   const removeTable = useQueryStore((s) => s.removeTable)
   const updateTableAlias = useQueryStore((s) => s.updateTableAlias)
@@ -124,7 +125,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
   return (
     <div
       ref={nodeRef}
-      className={cn('min-w-[140px] rounded border border-border bg-card shadow-sm', isOuterScope && 'opacity-50 pointer-events-none')}
+      className={cn('min-w-[140px] rounded border border-border bg-card shadow-sm', isOuterScope && 'opacity-60')}
     >
       {/* Header */}
       <div className={`flex items-center justify-between rounded-t ${headerBg} px-2 py-1 text-white`}>
@@ -150,8 +151,8 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
           ) : (
             <div
               className="truncate text-[8px] opacity-75 cursor-pointer hover:opacity-100"
-              title="Click to set alias"
-              onClick={() => { setAliasInput(instance.alias); setEditingAlias(true) }}
+              title={isOuterScope ? undefined : 'Click to set alias'}
+              onClick={() => { if (!isOuterScope) { setAliasInput(instance.alias); setEditingAlias(true) } }}
             >
               {instance.alias === instance.tableName ? <span className="italic opacity-60">alias…</span> : instance.alias}
             </div>
