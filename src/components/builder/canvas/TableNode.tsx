@@ -119,8 +119,8 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
   }
 
   const isCte = !!instance.cteId
-  const headerBg = isOuterScope ? 'bg-slate-500' : isCte ? 'bg-purple-600' : 'bg-blue-600'
-  const handleColor = isOuterScope ? '!border-slate-400' : isCte ? '!border-purple-400' : '!border-blue-400'
+  const headerBg = isOuterScope ? 'bg-slate-500' : isCte ? 'bg-purple-600' : 'bg-[#0f5c61]'
+  const handleColor = isOuterScope ? '!border-slate-400' : isCte ? '!border-purple-400' : '!border-teal-400'
 
   return (
     <div
@@ -131,7 +131,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
       <div className={`flex items-center justify-between rounded-t ${headerBg} px-2 py-1 text-white`}>
         <div className="min-w-0">
           <div className="flex items-center gap-1">
-            <div className="truncate font-semibold text-[10px]">{instance.tableName}</div>
+            <div className="truncate font-semibold text-xs">{instance.tableName}</div>
             {isCte && (
               <span className="rounded bg-white/20 px-0.5 text-[7px] font-semibold shrink-0">CTE</span>
             )}
@@ -142,7 +142,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
           {editingAlias ? (
             <input
               autoFocus
-              className="nodrag w-full rounded bg-blue-700 px-0.5 text-[8px] text-white outline-none"
+              className="nodrag w-full rounded bg-teal-800 px-0.5 text-[8px] text-white outline-none"
               value={aliasInput}
               onChange={(e) => setAliasInput(e.target.value)}
               onBlur={commitAlias}
@@ -207,7 +207,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
                 <label
                   htmlFor={`${instance.id}-${col.id}`}
                   className={cn(
-                    'flex flex-1 cursor-pointer items-center gap-1 text-[10px]',
+                    'flex flex-1 cursor-pointer items-center gap-1 text-xs',
                     col.isPrimaryKey && 'font-medium'
                   )}
                   title={col.description ?? undefined}
@@ -220,7 +220,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
                 {/* JSONB expand toggle */}
                 {isJsonb && pathOptions.length > 0 && (
                   <button
-                    className="shrink-0 text-blue-500 hover:text-blue-700"
+                    className="shrink-0 text-teal-500 hover:text-teal-700"
                     onClick={() => toggleJsonbExpand(col.name)}
                     title="Expand JSONB paths"
                   >
@@ -257,7 +257,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
                 return (
                   <div
                     key={opt.path}
-                    className="nodrag flex items-center gap-1.5 bg-blue-50/50 pl-8 pr-2 py-0.5 hover:bg-blue-50"
+                    className="nodrag flex items-center gap-1.5 bg-teal-50/50 pl-8 pr-2 py-0.5 hover:bg-teal-50"
                     onMouseDown={(e) => e.stopPropagation()}
                   >
                     <Checkbox
@@ -265,7 +265,7 @@ export const TableNode = memo(function TableNode({ data }: NodeProps<TableNodeDa
                       onCheckedChange={() => handleJsonbPathToggle(col, opt.path, opt.pgExpression)}
                       className="h-3 w-3"
                     />
-                    <span className="text-[10px] text-blue-700 truncate flex-1">{opt.label}</span>
+                    <span className="text-xs text-teal-700 truncate flex-1">{opt.label}</span>
                     <span className="text-[9px] text-muted-foreground shrink-0">{opt.valueType}</span>
                   </div>
                 )

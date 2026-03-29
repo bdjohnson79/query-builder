@@ -42,7 +42,7 @@ function TableDragOverlay() {
 
   const isCte = type === 'cte'
   return (
-    <div className={`pointer-events-none min-w-[140px] rounded border-2 border-dashed px-3 py-1.5 text-sm font-medium shadow-lg opacity-90 ${isCte ? 'border-purple-400 bg-purple-50 text-purple-700' : 'border-blue-400 bg-blue-50 text-blue-700'}`}>
+    <div className={`pointer-events-none min-w-[140px] rounded border-2 border-dashed px-3 py-1.5 text-sm font-medium shadow-lg opacity-90 ${isCte ? 'border-purple-400 bg-purple-50 text-purple-700' : 'border-teal-400 bg-teal-50 text-teal-700'}`}>
       {name}
     </div>
   )
@@ -225,44 +225,44 @@ function BuilderLayoutInner() {
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       {/* NavBar */}
-      <nav className="flex h-12 shrink-0 items-center justify-between border-b bg-background px-4">
-        <div className="flex items-center gap-2 font-semibold text-sm">
-          <Database className="h-4 w-4 text-blue-600" />
+      <nav className="flex h-12 shrink-0 items-center justify-between border-b border-[#14b8c4]/20 bg-[#0d3d40] px-4">
+        <div className="flex items-center gap-2 font-semibold text-sm text-white">
+          <Database className="h-4 w-4 text-[#14b8c4]" />
           SQL Query Builder
         </div>
         <div className="flex items-center gap-2">
-          <a href="/admin/schema" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
+          <a href="/admin/schema" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-white/70 hover:bg-white/10 hover:text-white transition-colors">
             Schema Admin
           </a>
-          <a href="/help" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm hover:bg-accent transition-colors">
+          <a href="/help" className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-white/70 hover:bg-white/10 hover:text-white transition-colors">
             Help
           </a>
-          <Button variant="outline" size="sm" onClick={() => setSavedQueriesOpen(true)}>
+          <Button variant="outline" size="sm" onClick={() => setSavedQueriesOpen(true)} className="border-white/20 bg-transparent text-white/75 hover:bg-white/10 hover:border-white/30 hover:text-white">
             <FolderOpen className="mr-1 h-3.5 w-3.5" />
             Load
           </Button>
-          <Button variant="outline" size="sm" onClick={openSaveDialog}>
+          <Button variant="outline" size="sm" onClick={openSaveDialog} className="border-white/20 bg-transparent text-white/75 hover:bg-white/10 hover:border-white/30 hover:text-white">
             <Save className="mr-1 h-3.5 w-3.5" />
             Save
           </Button>
-          <Button variant="outline" size="sm" onClick={handleSaveToFile} title="Save query to a local JSON file">
+          <Button variant="outline" size="sm" onClick={handleSaveToFile} title="Save query to a local JSON file" className="border-white/20 bg-transparent text-white/75 hover:bg-white/10 hover:border-white/30 hover:text-white">
             <FileDown className="mr-1 h-3.5 w-3.5" />
             Save to File
           </Button>
-          <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} title="Load query from a local JSON file">
+          <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} title="Load query from a local JSON file" className="border-white/20 bg-transparent text-white/75 hover:bg-white/10 hover:border-white/30 hover:text-white">
             <FileUp className="mr-1 h-3.5 w-3.5" />
             Load from File
           </Button>
           <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleLoadFromFile} />
-          <Button variant="outline" size="sm" onClick={handleCopy}>
+          <Button variant="outline" size="sm" onClick={handleCopy} className="border-white/20 bg-transparent text-white/75 hover:bg-white/10 hover:border-white/30 hover:text-white">
             <Copy className="mr-1 h-3.5 w-3.5" />
             Copy SQL
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => setTemplatesOpen(true)}>
+          <Button variant="ghost" size="sm" onClick={() => setTemplatesOpen(true)} className="text-white/60 hover:bg-white/10 hover:text-white">
             <LayoutTemplate className="mr-1 h-3.5 w-3.5" />
             Templates
           </Button>
-          <Button variant="ghost" size="sm" onClick={resetQuery}>
+          <Button variant="ghost" size="sm" onClick={resetQuery} className="text-white/60 hover:bg-white/10 hover:text-white">
             <RotateCcw className="mr-1 h-3.5 w-3.5" />
             Reset
           </Button>
@@ -271,6 +271,7 @@ function BuilderLayoutInner() {
             size="sm"
             onClick={() => setOnboardingOpen(true)}
             title="Take the tour"
+            className="text-white/60 hover:bg-white/10 hover:text-white"
           >
             <HelpCircle className="h-3.5 w-3.5" />
           </Button>
@@ -296,7 +297,7 @@ function BuilderLayoutInner() {
           <div className="relative z-10 flex-none select-none" style={{ width: 8 }}>
             {leftVisible && (
               <div
-                className="absolute inset-y-0 left-0 w-1 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors"
+                className="absolute inset-y-0 left-0 w-1 cursor-col-resize hover:bg-teal-300 active:bg-teal-400 transition-colors"
                 onMouseDown={onLeftDividerMouseDown}
               />
             )}
@@ -313,21 +314,21 @@ function BuilderLayoutInner() {
           <div className="relative flex flex-col flex-1 overflow-hidden min-w-0">
             {/* CTE editing banner */}
             {activeCte && (
-              <div className="flex shrink-0 items-center gap-3 border-b bg-blue-50 px-3 py-1.5">
+              <div className="flex shrink-0 items-center gap-3 border-b border-teal-100 bg-teal-50 px-3 py-1.5">
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-6 px-2 text-xs gap-1"
+                  className="h-6 px-2 text-xs gap-1 text-teal-700 hover:bg-teal-100 hover:text-teal-900"
                   onClick={stopEditingCte}
                 >
                   <ArrowLeft className="h-3 w-3" />
                   Main query
                 </Button>
-                <span className="text-xs text-blue-700">
+                <span className="text-xs text-teal-700">
                   Editing CTE: <span className="font-semibold">{activeCte.name}</span>
                 </span>
                 {activeCte.rawSql !== undefined && activeCte.rawSql !== null && (
-                  <span className="rounded bg-purple-100 text-purple-700 px-1 py-0.5 text-[10px]">
+                  <span className="rounded bg-purple-100 text-purple-700 px-1 py-0.5 text-xs">
                     Raw SQL mode — canvas inactive
                   </span>
                 )}
@@ -336,11 +337,11 @@ function BuilderLayoutInner() {
 
             {/* LATERAL editing banner */}
             {activeLateralJoin && !activeCte && (
-              <div className="flex shrink-0 items-center gap-3 border-b bg-cyan-50 px-3 py-1.5">
+              <div className="flex shrink-0 items-center gap-3 border-b border-cyan-100 bg-cyan-50 px-3 py-1.5">
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-6 px-2 text-xs gap-1"
+                  className="h-6 px-2 text-xs gap-1 text-cyan-700 hover:bg-cyan-100 hover:text-cyan-900"
                   onClick={stopEditingLateralJoin}
                 >
                   <ArrowLeft className="h-3 w-3" />
@@ -354,7 +355,7 @@ function BuilderLayoutInner() {
 
             {/* Canvas with optional ring overlay for editing modes */}
             <div className={`relative flex-1 overflow-hidden${
-              activeCte ? ' ring-2 ring-blue-400 ring-inset' :
+              activeCte ? ' ring-2 ring-teal-400 ring-inset' :
               activeLateralJoin ? ' ring-2 ring-cyan-400 ring-inset' :
               activeQueryPart === 'union' ? ' ring-2 ring-green-400 ring-inset' : ''
             }`}>
@@ -366,7 +367,7 @@ function BuilderLayoutInner() {
           <div className="relative z-10 flex-none select-none" style={{ width: 8 }}>
             {rightVisible && (
               <div
-                className="absolute inset-y-0 right-0 w-1 cursor-col-resize hover:bg-blue-300 active:bg-blue-400 transition-colors"
+                className="absolute inset-y-0 right-0 w-1 cursor-col-resize hover:bg-teal-300 active:bg-teal-400 transition-colors"
                 onMouseDown={onRightDividerMouseDown}
               />
             )}
@@ -492,7 +493,7 @@ function BuilderLayoutInner() {
                 {saveTags.map((tag) => (
                   <span
                     key={tag}
-                    className="flex items-center gap-0.5 rounded-full bg-blue-100 text-blue-700 px-2 py-0.5 text-xs"
+                    className="flex items-center gap-0.5 rounded-full bg-teal-100 text-teal-700 px-2 py-0.5 text-xs"
                   >
                     <Tag className="h-2.5 w-2.5" />
                     {tag}

@@ -59,10 +59,10 @@ function TabButton({
         onClick={onClick}
         className={cn(
           'rounded px-2 py-1 font-medium transition-colors',
-          size === 'small' ? 'text-[10px]' : 'text-xs',
+          size === 'small' ? 'text-xs' : 'text-sm',
           active
-            ? 'bg-background text-foreground shadow-sm'
-            : 'text-muted-foreground hover:text-foreground',
+            ? 'bg-background text-primary font-semibold shadow-sm'
+            : 'text-muted-foreground hover:text-foreground hover:bg-accent',
         )}
       >
         {tab.label}
@@ -119,7 +119,7 @@ export function RightPanel() {
         </span>
         {/* Show which advanced tab is active while section is collapsed */}
         {activeIsAdvanced && !advancedOpen && activeTab && (
-          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-foreground">
+          <span className="rounded bg-accent px-1.5 py-0.5 text-xs font-medium text-primary">
             {activeTab.label}
           </span>
         )}

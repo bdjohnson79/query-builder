@@ -27,7 +27,7 @@ export function DraggableTableCard({ table, schema, columns }: Props) {
       )}
     >
       <GripVertical className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      <Table2 className="h-3.5 w-3.5 shrink-0 text-blue-500" />
+      <Table2 className="h-3.5 w-3.5 shrink-0 text-teal-600" />
       <div className="min-w-0">
         <div className="truncate font-medium" title={table.description ?? undefined}>
           {table.name}

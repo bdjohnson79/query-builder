@@ -97,7 +97,7 @@ export function TableLibrary() {
           {tableCount > 0 && !activeCteId && !activeLateralJoinId && (
             <div>
               <div className="mb-1 flex items-center gap-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                <span className="font-mono text-[10px] text-cyan-600">LATERAL</span>
+                <span className="font-mono text-xs text-cyan-600">LATERAL</span>
                 Subqueries
               </div>
               {!lateralFormOpen ? (

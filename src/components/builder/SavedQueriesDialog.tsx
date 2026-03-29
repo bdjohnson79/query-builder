@@ -240,7 +240,7 @@ export function SavedQueriesDialog({ open, onClose, onLoad }: Props) {
                   <button
                     key={t}
                     onClick={() => toggleTag(t)}
-                    className="flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] text-blue-700 hover:bg-blue-200"
+                    className="flex items-center gap-1 rounded-full bg-teal-100 px-2 py-0.5 text-xs text-teal-700 hover:bg-teal-200"
                   >
                     <Tag className="h-2.5 w-2.5" />
                     {t}
@@ -377,10 +377,10 @@ function QueryCard({
                 key={tag}
                 onClick={() => onTagClick(tag)}
                 className={cn(
-                  'flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[11px] transition-colors',
+                  'flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-xs transition-colors',
                   activeTags.includes(tag)
-                    ? 'bg-blue-100 text-blue-700'
-                    : 'bg-muted text-muted-foreground hover:bg-blue-50 hover:text-blue-700'
+                    ? 'bg-teal-100 text-teal-700'
+                    : 'bg-muted text-muted-foreground hover:bg-teal-50 hover:text-teal-700'
                 )}
               >
                 <Tag className="h-2 w-2" />
