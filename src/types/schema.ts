@@ -46,6 +46,7 @@ export interface SavedQuery {
   schemaId: number | null
   folderId: number | null
   tags: string[] | null
+  isTemplate: boolean
   createdAt: Date
   updatedAt: Date
 }

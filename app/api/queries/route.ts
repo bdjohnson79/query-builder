@@ -12,6 +12,7 @@ const CreateQuery = z.object({
   schemaId: z.number().int().positive().optional(),
   folderId: z.number().int().nullable().optional(),
   tags: z.array(z.string()).nullable().optional(),
+  isTemplate: z.boolean().optional(),
 })
 
 export async function GET(req: Request) {
@@ -20,8 +21,13 @@ export async function GET(req: Request) {
     const search = url.searchParams.get('search')
     const folderIdParam = url.searchParams.get('folderId')
     const tagsParam = url.searchParams.get('tags')
+    const templatesOnly = url.searchParams.get('templates') === 'true'
 
     const conditions = []
+
+    if (templatesOnly) {
+      conditions.push(eq(savedQueries.isTemplate, true))
+    }
 
     if (search) {
       conditions.push(
@@ -68,6 +74,7 @@ export async function POST(req: Request) {
         schemaId: body.schemaId,
         folderId: body.folderId ?? null,
         tags: body.tags ?? null,
+        isTemplate: body.isTemplate ?? false,
       })
       .returning()
     return NextResponse.json(query, { status: 201 })

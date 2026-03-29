@@ -11,7 +11,8 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { ChevronUp, ChevronDown, X, Plus, GitBranch, Clock, Sigma } from 'lucide-react'
+import { ChevronUp, ChevronDown, X, Plus, GitBranch, Clock, Sigma, FlaskConical } from 'lucide-react'
+import { FormulaWizardDialog } from './FormulaWizardDialog'
 import { cn } from '@/lib/utils'
 import type { SelectedColumn } from '@/types/query'
 
@@ -194,7 +195,22 @@ const AGGREGATE_OPTIONS = [
   { value: 'MIN', label: 'MIN' },
   { value: 'MAX', label: 'MAX' },
   { value: 'COUNT DISTINCT', label: 'COUNT DISTINCT' },
+  { value: 'STDDEV', label: 'STDDEV' },
+  { value: 'STDDEV_POP', label: 'STDDEV_POP' },
+  { value: 'VARIANCE', label: 'VARIANCE' },
+  { value: 'VAR_POP', label: 'VAR_POP' },
+  { value: 'PERCENTILE_CONT', label: 'PERCENTILE_CONT' },
+  { value: 'PERCENTILE_DISC', label: 'PERCENTILE_DISC' },
+  { value: 'STRING_AGG', label: 'STRING_AGG' },
 ]
+
+// Aggregates that need a second argument (shown inline after the dropdown)
+const NEEDS_AGG_ARG = new Set(['PERCENTILE_CONT', 'PERCENTILE_DISC', 'STRING_AGG'])
+const AGG_ARG_PLACEHOLDER: Record<string, string> = {
+  PERCENTILE_CONT: 'fraction e.g. 0.5',
+  PERCENTILE_DISC: 'fraction e.g. 0.5',
+  STRING_AGG: 'delimiter e.g. ,',
+}
 
 function ColumnRow({
   col,
@@ -205,6 +221,8 @@ function ColumnRow({
   onRemove,
   onUpdateAlias,
   onUpdateAggregate,
+  onUpdateAggregateArg,
+  onUpdateFilterClause,
   gapfillActive,
   gapfillStrategy,
   onUpdateGapfill,
@@ -217,11 +235,15 @@ function ColumnRow({
   onRemove: () => void
   onUpdateAlias: (alias: string) => void
   onUpdateAggregate: (agg: string) => void
+  onUpdateAggregateArg: (arg: string) => void
+  onUpdateFilterClause: (clause: string) => void
   gapfillActive?: boolean
   gapfillStrategy?: 'locf' | 'interpolate'
   onUpdateGapfill?: (strategy: 'locf' | 'interpolate' | null) => void
 }) {
   const [aliasVal, setAliasVal] = useState(col.alias ?? '')
+  const [showFilter, setShowFilter] = useState(!!col.filterClause)
+  const [filterVal, setFilterVal] = useState(col.filterClause ?? '')
 
   const sourceLabel = col.expression
     ? col.expression.length > 36
@@ -229,80 +251,133 @@ function ColumnRow({
       : col.expression
     : `${col.tableAlias}.${col.columnName}`
 
-  const commitAlias = () => {
-    onUpdateAlias(aliasVal.trim())
-  }
+  const commitAlias = () => onUpdateAlias(aliasVal.trim())
+  const commitFilter = () => onUpdateFilterClause(filterVal.trim())
+
+  const needsArg = col.aggregate ? NEEDS_AGG_ARG.has(col.aggregate) : false
 
   return (
-    <div className="flex items-center gap-1.5 rounded border bg-background px-2 py-1.5 text-xs">
-      {/* Reorder */}
-      <div className="flex flex-col shrink-0">
-        <button
-          onClick={onMoveUp}
-          disabled={isFirst}
-          className="text-muted-foreground hover:text-foreground disabled:opacity-20 leading-none"
+    <div className="rounded border bg-background px-2 py-1.5 text-xs">
+      {/* Main row */}
+      <div className="flex items-center gap-1.5">
+        {/* Reorder */}
+        <div className="flex flex-col shrink-0">
+          <button
+            onClick={onMoveUp}
+            disabled={isFirst}
+            className="text-muted-foreground hover:text-foreground disabled:opacity-20 leading-none"
+          >
+            <ChevronUp className="h-3 w-3" />
+          </button>
+          <button
+            onClick={onMoveDown}
+            disabled={isLast}
+            className="text-muted-foreground hover:text-foreground disabled:opacity-20 leading-none"
+          >
+            <ChevronDown className="h-3 w-3" />
+          </button>
+        </div>
+
+        {/* Source label */}
+        <span
+          className="flex-1 min-w-0 font-mono text-[10px] text-muted-foreground truncate"
+          title={col.expression ?? `${col.tableAlias}.${col.columnName}`}
         >
-          <ChevronUp className="h-3 w-3" />
-        </button>
-        <button
-          onClick={onMoveDown}
-          disabled={isLast}
-          className="text-muted-foreground hover:text-foreground disabled:opacity-20 leading-none"
+          {sourceLabel}
+        </span>
+
+        {/* Alias */}
+        <input
+          className="w-24 rounded border bg-muted/30 px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+          value={aliasVal}
+          placeholder="alias"
+          onChange={(e) => setAliasVal(e.target.value)}
+          onBlur={commitAlias}
+          onKeyDown={(e) => { if (e.key === 'Enter') commitAlias() }}
+        />
+
+        {/* Aggregate */}
+        <select
+          className="rounded border bg-background px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+          value={col.aggregate ?? ''}
+          onChange={(e) => {
+            onUpdateAggregate(e.target.value)
+            if (!e.target.value) {
+              setShowFilter(false)
+              setFilterVal('')
+              onUpdateFilterClause('')
+            }
+          }}
         >
-          <ChevronDown className="h-3 w-3" />
+          {AGGREGATE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+
+        {/* Aggregate arg (fraction for PERCENTILE, delimiter for STRING_AGG) */}
+        {needsArg && (
+          <input
+            className="w-20 rounded border bg-muted/30 px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+            value={col.aggregateArg ?? ''}
+            placeholder={col.aggregate ? AGG_ARG_PLACEHOLDER[col.aggregate] : ''}
+            onChange={(e) => onUpdateAggregateArg(e.target.value)}
+            title={col.aggregate ? AGG_ARG_PLACEHOLDER[col.aggregate] : ''}
+          />
+        )}
+
+        {/* FILTER toggle (only when an aggregate is selected) */}
+        {col.aggregate && (
+          <button
+            onClick={() => setShowFilter((v) => !v)}
+            title="Add FILTER (WHERE ...) to aggregate"
+            className={cn(
+              'shrink-0 text-[10px] px-1 rounded transition-colors',
+              showFilter
+                ? 'text-blue-600 bg-blue-50 border border-blue-200'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            filter
+          </button>
+        )}
+
+        {/* Gapfill strategy (only shown when time_bucket_gapfill is active) */}
+        {gapfillActive && (
+          <select
+            className="rounded border bg-blue-50 border-blue-200 px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
+            value={gapfillStrategy ?? ''}
+            onChange={(e) => onUpdateGapfill?.(e.target.value as 'locf' | 'interpolate' || null)}
+            title="Gapfill strategy"
+          >
+            <option value="">no fill</option>
+            <option value="locf">locf</option>
+            <option value="interpolate">interpolate</option>
+          </select>
+        )}
+
+        {/* Remove */}
+        <button
+          onClick={onRemove}
+          className="shrink-0 text-muted-foreground hover:text-destructive transition-colors"
+        >
+          <X className="h-3 w-3" />
         </button>
       </div>
 
-      {/* Source label */}
-      <span
-        className="flex-1 min-w-0 font-mono text-[10px] text-muted-foreground truncate"
-        title={col.expression ?? `${col.tableAlias}.${col.columnName}`}
-      >
-        {sourceLabel}
-      </span>
-
-      {/* Alias */}
-      <input
-        className="w-24 rounded border bg-muted/30 px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
-        value={aliasVal}
-        placeholder="alias"
-        onChange={(e) => setAliasVal(e.target.value)}
-        onBlur={commitAlias}
-        onKeyDown={(e) => { if (e.key === 'Enter') commitAlias() }}
-      />
-
-      {/* Aggregate */}
-      <select
-        className="rounded border bg-background px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
-        value={col.aggregate ?? ''}
-        onChange={(e) => onUpdateAggregate(e.target.value)}
-      >
-        {AGGREGATE_OPTIONS.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
-
-      {/* Gapfill strategy (only shown when time_bucket_gapfill is active) */}
-      {gapfillActive && (
-        <select
-          className="rounded border bg-blue-50 border-blue-200 px-1 py-0.5 text-[10px] focus:outline-none focus:ring-1 focus:ring-ring"
-          value={gapfillStrategy ?? ''}
-          onChange={(e) => onUpdateGapfill?.(e.target.value as 'locf' | 'interpolate' || null)}
-          title="Gapfill strategy"
-        >
-          <option value="">no fill</option>
-          <option value="locf">locf</option>
-          <option value="interpolate">interpolate</option>
-        </select>
+      {/* FILTER clause row */}
+      {showFilter && col.aggregate && (
+        <div className="mt-1 flex items-center gap-1">
+          <span className="text-[10px] text-muted-foreground shrink-0 font-mono">FILTER WHERE</span>
+          <input
+            className="flex-1 rounded border bg-muted/30 px-1.5 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+            value={filterVal}
+            placeholder="e.g. status = 'pass'"
+            onChange={(e) => setFilterVal(e.target.value)}
+            onBlur={commitFilter}
+            onKeyDown={(e) => { if (e.key === 'Enter') commitFilter() }}
+          />
+        </div>
       )}
-
-      {/* Remove */}
-      <button
-        onClick={onRemove}
-        className="shrink-0 text-muted-foreground hover:text-destructive transition-colors"
-      >
-        <X className="h-3 w-3" />
-      </button>
     </div>
   )
 }
@@ -340,6 +415,7 @@ export function SelectColumnsPanel() {
   const [stOneArg1, setStOneArg1]             = useState('')
   const [stOneArg2, setStOneArg2]             = useState('')
   const [stOneAlias, setStOneAlias]           = useState('')
+  const [formulaOpen, setFormulaOpen]         = useState(false)
 
   // All timestamp/timestamptz columns from current query tables
   const timestampColumns = tables.flatMap((t) =>
@@ -425,6 +501,16 @@ export function SelectColumnsPanel() {
     setShowStOneAgg(false)
   }
 
+  const addFormula = (expression: string, alias: string) => {
+    addColumn({
+      id: crypto.randomUUID(),
+      tableAlias: '__expr__',
+      columnName: alias,
+      alias,
+      expression,
+    })
+  }
+
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
@@ -469,6 +555,15 @@ export function SelectColumnsPanel() {
             <Sigma className="h-3 w-3" />
             ST-One Agg
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 gap-1 text-xs px-2"
+            onClick={() => setFormulaOpen(true)}
+          >
+            <FlaskConical className="h-3 w-3" />
+            Formulas
+          </Button>
         </div>
       </div>
 
@@ -490,7 +585,9 @@ export function SelectColumnsPanel() {
               onMoveDown={() => moveDown(idx)}
               onRemove={() => toggleColumn(col)}
               onUpdateAlias={(alias) => updateColumn(col.id, { alias: alias || undefined })}
-              onUpdateAggregate={(agg) => updateColumn(col.id, { aggregate: agg || undefined })}
+              onUpdateAggregate={(agg) => updateColumn(col.id, { aggregate: agg || undefined, aggregateArg: undefined })}
+              onUpdateAggregateArg={(arg) => updateColumn(col.id, { aggregateArg: arg || undefined })}
+              onUpdateFilterClause={(clause) => updateColumn(col.id, { filterClause: clause || undefined })}
               gapfillActive={gapfillActive}
               gapfillStrategy={(gapfillStrategies ?? []).find((g) => g.selectedColumnId === col.id)?.strategy}
               onUpdateGapfill={(strategy) => setGapfillStrategy(col.id, strategy)}
@@ -683,6 +780,7 @@ export function SelectColumnsPanel() {
       </div>
 
       <CaseWhenDialog open={caseOpen} onClose={() => setCaseOpen(false)} onAdd={addCaseWhen} />
+      <FormulaWizardDialog open={formulaOpen} onClose={() => setFormulaOpen(false)} onAdd={addFormula} />
     </div>
   )
 }

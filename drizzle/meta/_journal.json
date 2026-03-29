@@ -29,6 +29,13 @@
       "when": 1774204505388,
       "tag": "0003_striped_logan",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1774812194733,
+      "tag": "0004_cool_archangel",
+      "breakpoints": true
     }
   ]
 }

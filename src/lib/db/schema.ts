@@ -76,6 +76,7 @@ export const savedQueries = pgTable('saved_queries', {
     onDelete: 'set null',
   }),
   tags: text('tags').array(),
+  isTemplate: boolean('is_template').notNull().default(false),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 })

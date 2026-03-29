@@ -308,10 +308,23 @@ function buildSelectList(
     let expr: string
     if (col.aggregate === 'COUNT DISTINCT') {
       expr = `COUNT(DISTINCT ${ref})`
+    } else if (col.aggregate === 'PERCENTILE_CONT' || col.aggregate === 'PERCENTILE_DISC') {
+      const fraction = col.aggregateArg?.trim() || '0.5'
+      expr = `${col.aggregate}(${fraction}) WITHIN GROUP (ORDER BY ${ref})`
+    } else if (col.aggregate === 'STRING_AGG') {
+      const delim = col.aggregateArg !== undefined && col.aggregateArg !== ''
+        ? `'${col.aggregateArg.replace(/'/g, "''")}'`
+        : "', '"
+      expr = `STRING_AGG(${ref}, ${delim})`
     } else if (col.aggregate) {
       expr = `${col.aggregate}(${ref})`
     } else {
       expr = ref
+    }
+
+    // Aggregate FILTER (WHERE ...) clause
+    if (col.filterClause?.trim() && col.aggregate) {
+      expr = `${expr} FILTER (WHERE ${col.filterClause.trim()})`
     }
 
     // Wrap with gapfill strategy (locf/interpolate) when gapfill is active
@@ -495,6 +508,13 @@ function buildOrderByItem(ob: OrderByItem): string {
 // ---------------------------------------------------------------------------
 
 function buildCteFragment(cte: CTEDef): string {
-  const innerSql = cte.rawSql?.trim() ?? buildRawSql(cte.queryState)
+  let innerSql: string
+  if (cte.recursive && cte.recursiveMode === 'guided') {
+    const anchor = cte.anchorSql?.trim() ?? '-- anchor query here'
+    const step = cte.recursiveStepSql?.trim() ?? `-- recursive step here (may reference ${cte.name})`
+    innerSql = `${anchor}\nUNION ALL\n${step}`
+  } else {
+    innerSql = cte.rawSql?.trim() ?? buildRawSql(cte.queryState)
+  }
   return `${qi(cte.name)} AS (\n${innerSql}\n)`
 }

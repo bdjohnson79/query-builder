@@ -4,7 +4,7 @@ import { useQueryStore } from '@/store/queryStore'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { X, Plus, Pencil, Code2, Eye } from 'lucide-react'
+import { X, Plus, Pencil, Code2, Eye, GitMerge } from 'lucide-react'
 import { emptyQueryState } from '@/types/query'
 import type { CTEDef, CteOutputColumn } from '@/types/query'
 
@@ -62,19 +62,25 @@ function OutputColumnsEditor({
 
 // ── CTE edit form ────────────────────────────────────────────────────────────
 
+type CteBodyMode = 'visual' | 'raw' | 'guided'
+
 function CteEditForm({ cte }: { cte: CTEDef }) {
   const updateCte = useQueryStore((s) => s.updateCte)
   const stopEditingCte = useQueryStore((s) => s.stopEditingCte)
 
   const rawMode = cte.rawSql !== undefined && cte.rawSql !== null
+  const guidedMode = cte.recursive && cte.recursiveMode === 'guided'
 
-  const toggleRawMode = () => {
-    if (rawMode) {
-      // Switch to visual mode — clear rawSql
-      updateCte(cte.id, { rawSql: undefined })
+  const currentMode: CteBodyMode = guidedMode ? 'guided' : rawMode ? 'raw' : 'visual'
+
+  const switchMode = (mode: CteBodyMode) => {
+    if (mode === 'visual') {
+      updateCte(cte.id, { rawSql: undefined, recursiveMode: undefined })
+    } else if (mode === 'raw') {
+      updateCte(cte.id, { rawSql: rawMode ? cte.rawSql : '', recursiveMode: undefined })
     } else {
-      // Switch to raw SQL mode — set rawSql to empty string
-      updateCte(cte.id, { rawSql: '' })
+      // guided — only available when recursive is checked
+      updateCte(cte.id, { rawSql: undefined, recursiveMode: 'guided' })
     }
   }
 
@@ -103,7 +109,13 @@ function CteEditForm({ cte }: { cte: CTEDef }) {
         <input
           type="checkbox"
           checked={cte.recursive}
-          onChange={(e) => updateCte(cte.id, { recursive: e.target.checked })}
+          onChange={(e) => {
+            updateCte(cte.id, { recursive: e.target.checked })
+            // If turning off recursive, exit guided mode
+            if (!e.target.checked && guidedMode) {
+              updateCte(cte.id, { recursiveMode: undefined })
+            }
+          }}
         />
         RECURSIVE
       </label>
@@ -111,27 +123,82 @@ function CteEditForm({ cte }: { cte: CTEDef }) {
       {/* Mode toggle */}
       <div className="space-y-1">
         <Label className="text-xs">Body mode</Label>
-        <div className="flex gap-1">
+        <div className="flex gap-1 flex-wrap">
           <Button
-            variant={rawMode ? 'outline' : 'default'}
+            variant={currentMode === 'visual' ? 'default' : 'outline'}
             size="sm"
             className="h-6 text-xs gap-1"
-            onClick={() => rawMode && toggleRawMode()}
+            onClick={() => switchMode('visual')}
           >
-            <Eye className="h-3 w-3" /> Visual builder
+            <Eye className="h-3 w-3" /> Visual
           </Button>
           <Button
-            variant={rawMode ? 'default' : 'outline'}
+            variant={currentMode === 'raw' ? 'default' : 'outline'}
             size="sm"
             className="h-6 text-xs gap-1"
-            onClick={() => !rawMode && toggleRawMode()}
+            onClick={() => switchMode('raw')}
           >
             <Code2 className="h-3 w-3" /> Raw SQL
           </Button>
+          {cte.recursive && (
+            <Button
+              variant={currentMode === 'guided' ? 'default' : 'outline'}
+              size="sm"
+              className="h-6 text-xs gap-1"
+              onClick={() => switchMode('guided')}
+              title="Two-pane guided mode for recursive CTEs"
+            >
+              <GitMerge className="h-3 w-3" /> Guided
+            </Button>
+          )}
         </div>
       </div>
 
-      {rawMode ? (
+      {currentMode === 'guided' ? (
+        <>
+          {/* Help text */}
+          <div className="rounded-md bg-blue-50 border border-blue-200 px-3 py-2 text-xs text-blue-800 space-y-1">
+            <p className="font-medium">Recursive CTE pattern</p>
+            <p>The anchor query returns the base rows. The recursive step joins back to <code className="font-mono bg-blue-100 px-0.5 rounded">{cte.name || 'this CTE'}</code> to traverse the hierarchy.</p>
+          </div>
+
+          {/* Anchor query */}
+          <div className="space-y-1">
+            <Label className="text-xs font-medium">Anchor query <span className="text-muted-foreground font-normal">(starting rows, non-recursive)</span></Label>
+            <textarea
+              className="w-full rounded-md border bg-background px-2 py-1.5 text-xs font-mono resize-y min-h-[80px] focus:outline-none focus:ring-1 focus:ring-ring"
+              value={cte.anchorSql ?? ''}
+              onChange={(e) => updateCte(cte.id, { anchorSql: e.target.value })}
+              placeholder={`SELECT id, parent_id, name, 0 AS depth\nFROM your_table\nWHERE parent_id IS NULL`}
+              spellCheck={false}
+            />
+          </div>
+
+          <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+            <div className="flex-1 border-t" />
+            <span className="font-mono">UNION ALL</span>
+            <div className="flex-1 border-t" />
+          </div>
+
+          {/* Recursive step */}
+          <div className="space-y-1">
+            <Label className="text-xs font-medium">Recursive step <span className="text-muted-foreground font-normal">(each iteration)</span></Label>
+            <textarea
+              className="w-full rounded-md border bg-background px-2 py-1.5 text-xs font-mono resize-y min-h-[80px] focus:outline-none focus:ring-1 focus:ring-ring"
+              value={cte.recursiveStepSql ?? ''}
+              onChange={(e) => updateCte(cte.id, { recursiveStepSql: e.target.value })}
+              placeholder={`SELECT t.id, t.parent_id, t.name, r.depth + 1\nFROM your_table t\nINNER JOIN ${cte.name || 'cte_name'} r ON t.parent_id = r.id`}
+              spellCheck={false}
+            />
+          </div>
+
+          {/* Output columns */}
+          <OutputColumnsEditor
+            columns={cte.outputColumns ?? []}
+            onChange={(cols) => updateCte(cte.id, { outputColumns: cols })}
+          />
+        </>
+      ) : currentMode === 'raw' ? (
         <>
           {/* Raw SQL textarea */}
           <div className="space-y-1">
@@ -171,6 +238,14 @@ function CteListItem({ cte }: { cte: CTEDef }) {
   const removeCte = useQueryStore((s) => s.removeCte)
   const startEditingCte = useQueryStore((s) => s.startEditingCte)
   const rawMode = cte.rawSql !== undefined && cte.rawSql !== null
+  const guidedMode = cte.recursive && cte.recursiveMode === 'guided'
+
+  const modeLabel = guidedMode ? 'Guided' : rawMode ? 'Raw SQL' : 'Visual'
+  const modeClass = guidedMode
+    ? 'bg-blue-100 text-blue-700'
+    : rawMode
+    ? 'bg-purple-100 text-purple-700'
+    : 'bg-green-100 text-green-700'
 
   return (
     <div className="rounded-md border p-2 space-y-1">
@@ -182,14 +257,8 @@ function CteListItem({ cte }: { cte: CTEDef }) {
               RECURSIVE
             </span>
           )}
-          <span
-            className={`rounded px-1 py-0.5 text-[10px] shrink-0 ${
-              rawMode
-                ? 'bg-purple-100 text-purple-700'
-                : 'bg-green-100 text-green-700'
-            }`}
-          >
-            {rawMode ? 'Raw SQL' : 'Visual'}
+          <span className={`rounded px-1 py-0.5 text-[10px] shrink-0 ${modeClass}`}>
+            {modeLabel}
           </span>
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
@@ -213,14 +282,14 @@ function CteListItem({ cte }: { cte: CTEDef }) {
           </Button>
         </div>
       </div>
-      {rawMode && cte.outputColumns && cte.outputColumns.length > 0 && (
+      {(rawMode || guidedMode) && cte.outputColumns && cte.outputColumns.length > 0 && (
         <p className="text-[10px] text-muted-foreground">
           {cte.outputColumns.length} output column{cte.outputColumns.length !== 1 ? 's' : ''}
           {' — '}
           {cte.outputColumns.map((c) => c.name).join(', ')}
         </p>
       )}
-      {!rawMode && (
+      {!rawMode && !guidedMode && (
         <p className="text-[10px] text-muted-foreground">
           Click Edit to open visual builder for this CTE
         </p>

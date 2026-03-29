@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { api } from '@/lib/api/client'
 import { useToast } from '@/components/ui/toast'
-import { Search, Folder, FolderOpen, Tag, Upload, Copy, Trash2, Download } from 'lucide-react'
+import { Search, Folder, FolderOpen, Tag, Upload, Copy, Trash2, Download, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { SavedQuery, QueryFolder } from '@/types/schema'
 import type { QueryState } from '@/types/query'
@@ -16,7 +16,7 @@ interface Props {
   onLoad: (queryState: QueryState, name: string) => void
 }
 
-type FolderFilter = 'all' | 'none' | number
+type FolderFilter = 'all' | 'templates' | 'none' | number
 type SortMode = 'newest' | 'oldest' | 'name'
 
 function formatDate(d: Date | string) {
@@ -63,9 +63,10 @@ export function SavedQueriesDialog({ open, onClose, onLoad }: Props) {
       return q.name.toLowerCase().includes(s) || (q.description ?? '').toLowerCase().includes(s)
     })
     .filter((q) => {
-      if (selectedFolder === 'all') return true
-      if (selectedFolder === 'none') return !q.folderId
-      return q.folderId === selectedFolder
+      if (selectedFolder === 'templates') return q.isTemplate
+      if (selectedFolder === 'all') return !q.isTemplate
+      if (selectedFolder === 'none') return !q.folderId && !q.isTemplate
+      return q.folderId === selectedFolder && !q.isTemplate
     })
     .filter((q) => activeTags.every((t) => q.tags?.includes(t)))
     .sort((a, b) => {
@@ -75,9 +76,10 @@ export function SavedQueriesDialog({ open, onClose, onLoad }: Props) {
     })
 
   // Folder counts
-  const countAll = queries.length
-  const countNone = queries.filter((q) => !q.folderId).length
-  const countByFolder = (id: number) => queries.filter((q) => q.folderId === id).length
+  const countTemplates = queries.filter((q) => q.isTemplate).length
+  const countAll = queries.filter((q) => !q.isTemplate).length
+  const countNone = queries.filter((q) => !q.folderId && !q.isTemplate).length
+  const countByFolder = (id: number) => queries.filter((q) => q.folderId === id && !q.isTemplate).length
 
   const toggleTag = (tag: string) => {
     setActiveTags((prev) =>
@@ -171,6 +173,14 @@ export function SavedQueriesDialog({ open, onClose, onLoad }: Props) {
         <div className="flex flex-1 overflow-hidden">
           {/* Left sidebar — folder filter */}
           <div className="w-44 shrink-0 border-r p-2 space-y-0.5 overflow-y-auto">
+            <FolderEntry
+              label="Templates"
+              count={countTemplates}
+              active={selectedFolder === 'templates'}
+              onClick={() => setSelectedFolder('templates')}
+              icon={<Sparkles className="h-3.5 w-3.5 shrink-0 text-amber-500" />}
+            />
+            <div className="my-1 border-t" />
             <FolderEntry
               label="All Queries"
               count={countAll}
@@ -343,7 +353,15 @@ function QueryCard({
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <div className="font-medium text-sm truncate">{query.name}</div>
+          <div className="flex items-center gap-1.5">
+            <div className="font-medium text-sm truncate">{query.name}</div>
+            {query.isTemplate && (
+              <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 shrink-0">
+                <Sparkles className="h-2.5 w-2.5" />
+                Template
+              </span>
+            )}
+          </div>
           {query.description && (
             <div className="text-xs text-muted-foreground mt-0.5 truncate">{query.description}</div>
           )}
@@ -380,29 +398,35 @@ function QueryCard({
           hovered ? 'opacity-100' : 'opacity-0'
         )}>
           <Button size="sm" className="h-6 px-2 text-xs" onClick={onLoad}>
-            Load
+            {query.isTemplate ? 'Use' : 'Load'}
           </Button>
-          <button
-            onClick={onDuplicate}
-            title="Duplicate"
-            className="rounded p-1 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <Copy className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={onExport}
-            title="Export JSON"
-            className="rounded p-1 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <Download className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={onDelete}
-            title="Delete"
-            className="rounded p-1 hover:bg-muted text-destructive hover:text-destructive transition-colors"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
+          {!query.isTemplate && (
+            <button
+              onClick={onDuplicate}
+              title="Duplicate"
+              className="rounded p-1 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {!query.isTemplate && (
+            <button
+              onClick={onExport}
+              title="Export JSON"
+              className="rounded p-1 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <Download className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {!query.isTemplate && (
+            <button
+              onClick={onDelete}
+              title="Delete"
+              className="rounded p-1 hover:bg-muted text-destructive hover:text-destructive transition-colors"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       </div>
     </div>

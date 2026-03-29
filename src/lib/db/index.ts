@@ -41,4 +41,5 @@ export async function initializeDb(): Promise<void> {
     const sql = readFileSync(seedPath, 'utf-8')
     await client.exec(sql)
   }
+
 }

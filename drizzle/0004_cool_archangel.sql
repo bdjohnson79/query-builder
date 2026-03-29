@@ -1,0 +1,1 @@
+ALTER TABLE "saved_queries" ADD COLUMN "is_template" boolean DEFAULT false NOT NULL;

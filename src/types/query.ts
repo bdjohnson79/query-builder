@@ -61,7 +61,9 @@ export interface SelectedColumn {
   columnName: string
   alias?: string
   expression?: string  // for computed columns (custom expressions, CASE WHEN, etc.)
-  aggregate?: string   // 'COUNT' | 'SUM' | 'AVG' | 'MIN' | 'MAX' | 'COUNT DISTINCT'
+  aggregate?: string   // 'COUNT' | 'SUM' | 'AVG' | 'MIN' | 'MAX' | 'COUNT DISTINCT' | 'STDDEV' | etc.
+  aggregateArg?: string  // second argument: PERCENTILE_CONT/DISC fraction, STRING_AGG delimiter
+  filterClause?: string  // aggregate FILTER (WHERE ...) condition
 }
 
 export interface JsonbExpansion {
@@ -139,6 +141,10 @@ export interface CTEDef {
   queryState: QueryState
   rawSql?: string              // when set, overrides queryState in SQL generation
   outputColumns: CteOutputColumn[]  // columns exposed when dragged as a virtual table
+  // Guided recursive mode — two-pane anchor + recursive step
+  recursiveMode?: 'guided' | 'raw'  // only relevant when recursive === true
+  anchorSql?: string           // non-recursive anchor SELECT
+  recursiveStepSql?: string    // recursive UNION ALL SELECT (may reference the CTE name)
 }
 
 export interface QueryState {

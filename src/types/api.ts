@@ -54,6 +54,7 @@ export interface CreateQueryBody {
   schemaId?: number
   folderId?: number | null
   tags?: string[] | null
+  isTemplate?: boolean
 }
 export interface UpdateQueryBody extends Partial<CreateQueryBody> {}
 export type QueryResponse = SavedQuery
