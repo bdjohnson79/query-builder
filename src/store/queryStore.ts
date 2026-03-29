@@ -191,16 +191,20 @@ function setActiveQueryState(s: QueryStore, next: QueryState): Partial<QueryStor
   return { queryState: next, generatedSql: rebuildSql(next) }
 }
 
+// Stable empty array — returned by getLateralOuterScopeTables when there is no outer scope.
+// Must be a module-level constant so Object.is comparisons in Zustand selectors stay stable.
+const NO_TABLES: QueryState['tables'] = []
+
 /** Returns the tables in scope for the outer context when editing a LATERAL subquery. */
 export function getLateralOuterScopeTables(s: QueryStore): QueryState['tables'] {
-  if (!s.activeLateralJoinId) return []
+  if (!s.activeLateralJoinId) return NO_TABLES
   if (s.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
     return s.queryState.tables
   }
   if (s.queryState.unionQuery?.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
     return s.queryState.unionQuery.queryState.tables
   }
-  return []
+  return NO_TABLES
 }
 
 export { getActiveQueryState }
