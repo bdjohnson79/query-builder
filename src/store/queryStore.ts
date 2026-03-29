@@ -120,26 +120,40 @@ function rebuildSql(state: QueryState): string {
 // ---------------------------------------------------------------------------
 // Editing mode helpers
 // Priority chain for mutations:
-//   1. activeCteId set → mutate that CTE's nested queryState
-//   2. activeLateralJoinId set → mutate that join's lateralSubquery
-//   3. activeQueryPart === 'union' → mutate the unionQuery branch's queryState
-//   4. Default → mutate root queryState
+//   1. activeLateralJoinId set → mutate that join's lateralSubquery (searched in all contexts)
+//   2. activeCteId + activeQueryPart==='union' → mutate that CTE's union branch queryState
+//   3. activeCteId set → mutate that CTE's main queryState
+//   4. activeQueryPart === 'union' → mutate the root unionQuery branch's queryState
+//   5. Default → mutate root queryState
 // The SQL preview always rebuilds from the full root queryState.
 // ---------------------------------------------------------------------------
 
 function getActiveQueryState(s: QueryStore): QueryState {
-  if (s.activeCteId) {
-    const cte = s.queryState.ctes.find((c) => c.id === s.activeCteId)
-    if (cte) return cte.queryState
-  }
+  // Lateral takes highest priority — it can be nested inside a CTE or its union branch
   if (s.activeLateralJoinId) {
-    // Search root joins first, then union branch joins
     const rootJoin = s.queryState.joins.find((j) => j.id === s.activeLateralJoinId)
     if (rootJoin?.lateralSubquery) return rootJoin.lateralSubquery
-    const unionJoin = s.queryState.unionQuery?.queryState.joins.find(
+    const rootUnionJoin = s.queryState.unionQuery?.queryState.joins.find(
       (j) => j.id === s.activeLateralJoinId
     )
-    if (unionJoin?.lateralSubquery) return unionJoin.lateralSubquery
+    if (rootUnionJoin?.lateralSubquery) return rootUnionJoin.lateralSubquery
+    for (const cte of s.queryState.ctes) {
+      const cteJoin = cte.queryState.joins.find((j) => j.id === s.activeLateralJoinId)
+      if (cteJoin?.lateralSubquery) return cteJoin.lateralSubquery
+      const cteUnionJoin = cte.queryState.unionQuery?.queryState.joins.find(
+        (j) => j.id === s.activeLateralJoinId
+      )
+      if (cteUnionJoin?.lateralSubquery) return cteUnionJoin.lateralSubquery
+    }
+  }
+  if (s.activeCteId) {
+    const cte = s.queryState.ctes.find((c) => c.id === s.activeCteId)
+    if (cte) {
+      if (s.activeQueryPart === 'union' && cte.queryState.unionQuery) {
+        return cte.queryState.unionQuery.queryState
+      }
+      return cte.queryState
+    }
   }
   if (s.activeQueryPart === 'union' && s.queryState.unionQuery) {
     return s.queryState.unionQuery.queryState
@@ -148,28 +162,17 @@ function getActiveQueryState(s: QueryStore): QueryState {
 }
 
 function setActiveQueryState(s: QueryStore, next: QueryState): Partial<QueryStore> {
-  if (s.activeCteId) {
-    const updatedCtes = s.queryState.ctes.map((c) =>
-      c.id === s.activeCteId ? { ...c, queryState: next } : c
-    )
-    const updatedRoot = { ...s.queryState, ctes: updatedCtes }
-    return { queryState: updatedRoot, generatedSql: rebuildSql(updatedRoot) }
-  }
+  // Lateral subquery editing — find the join in any context and update its subquery
   if (s.activeLateralJoinId) {
-    // Update the lateral join's subquery, whether it's on root or union branch
     const updateJoins = (joins: QueryState['joins']) =>
       joins.map((j) =>
         j.id === s.activeLateralJoinId ? { ...j, lateralSubquery: next } : j
       )
-    const rootHasJoin = s.queryState.joins.some((j) => j.id === s.activeLateralJoinId)
-    if (rootHasJoin) {
+    if (s.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
       const updatedRoot = { ...s.queryState, joins: updateJoins(s.queryState.joins) }
       return { queryState: updatedRoot, generatedSql: rebuildSql(updatedRoot) }
     }
-    const unionHasJoin = s.queryState.unionQuery?.queryState.joins.some(
-      (j) => j.id === s.activeLateralJoinId
-    )
-    if (unionHasJoin && s.queryState.unionQuery) {
+    if (s.queryState.unionQuery?.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
       const updatedUnionQs = {
         ...s.queryState.unionQuery.queryState,
         joins: updateJoins(s.queryState.unionQuery.queryState.joins),
@@ -177,6 +180,44 @@ function setActiveQueryState(s: QueryStore, next: QueryState): Partial<QueryStor
       const updatedRoot = {
         ...s.queryState,
         unionQuery: { ...s.queryState.unionQuery, queryState: updatedUnionQs },
+      }
+      return { queryState: updatedRoot, generatedSql: rebuildSql(updatedRoot) }
+    }
+    // Search CTE main and union branch joins
+    for (const cte of s.queryState.ctes) {
+      if (cte.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
+        const updatedCteQs = { ...cte.queryState, joins: updateJoins(cte.queryState.joins) }
+        const updatedRoot = {
+          ...s.queryState,
+          ctes: s.queryState.ctes.map((c) => c.id === cte.id ? { ...c, queryState: updatedCteQs } : c),
+        }
+        return { queryState: updatedRoot, generatedSql: rebuildSql(updatedRoot) }
+      }
+      if (cte.queryState.unionQuery?.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
+        const unionQs = cte.queryState.unionQuery.queryState
+        const updatedCteQs = {
+          ...cte.queryState,
+          unionQuery: { ...cte.queryState.unionQuery, queryState: { ...unionQs, joins: updateJoins(unionQs.joins) } },
+        }
+        const updatedRoot = {
+          ...s.queryState,
+          ctes: s.queryState.ctes.map((c) => c.id === cte.id ? { ...c, queryState: updatedCteQs } : c),
+        }
+        return { queryState: updatedRoot, generatedSql: rebuildSql(updatedRoot) }
+      }
+    }
+  }
+  // CTE editing — route to CTE's main or union branch
+  if (s.activeCteId) {
+    const cte = s.queryState.ctes.find((c) => c.id === s.activeCteId)
+    if (cte) {
+      const updatedCteQs =
+        s.activeQueryPart === 'union' && cte.queryState.unionQuery
+          ? { ...cte.queryState, unionQuery: { ...cte.queryState.unionQuery, queryState: next } }
+          : next
+      const updatedRoot = {
+        ...s.queryState,
+        ctes: s.queryState.ctes.map((c) => c.id === s.activeCteId ? { ...c, queryState: updatedCteQs } : c),
       }
       return { queryState: updatedRoot, generatedSql: rebuildSql(updatedRoot) }
     }
@@ -204,6 +245,14 @@ export function getLateralOuterScopeTables(s: QueryStore): QueryState['tables'] 
   if (s.queryState.unionQuery?.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
     return s.queryState.unionQuery.queryState.tables
   }
+  for (const cte of s.queryState.ctes) {
+    if (cte.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
+      return cte.queryState.tables
+    }
+    if (cte.queryState.unionQuery?.queryState.joins.some((j) => j.id === s.activeLateralJoinId)) {
+      return cte.queryState.unionQuery.queryState.tables
+    }
+  }
   return NO_TABLES
 }
 
@@ -219,13 +268,20 @@ export const useQueryStore = create<QueryStore>()(
     activeQueryPart: 'main',
     activeLateralJoinId: null,
 
-    startEditingCte: (id) => set({ activeCteId: id, userEditedSql: null }),
-    stopEditingCte: () => set({ activeCteId: null }),
+    startEditingCte: (id) => set({ activeCteId: id, activeQueryPart: 'main', userEditedSql: null }),
+    stopEditingCte: () => set({ activeCteId: null, activeQueryPart: 'main' }),
 
     setActiveQueryPart: (part) => set({ activeQueryPart: part }),
 
     addUnionBranch: (operator) =>
       set((s) => {
+        if (s.activeCteId) {
+          const cte = s.queryState.ctes.find((c) => c.id === s.activeCteId)
+          if (!cte || cte.queryState.unionQuery) return s
+          const updatedCteQs = { ...cte.queryState, unionQuery: { operator, queryState: emptyQueryState() } }
+          const next = { ...s.queryState, ctes: s.queryState.ctes.map((c) => c.id === s.activeCteId ? { ...c, queryState: updatedCteQs } : c) }
+          return { queryState: next, generatedSql: rebuildSql(next) }
+        }
         if (s.queryState.unionQuery) return s
         const next = { ...s.queryState, unionQuery: { operator, queryState: emptyQueryState() } }
         return { queryState: next, generatedSql: rebuildSql(next) }
@@ -233,6 +289,13 @@ export const useQueryStore = create<QueryStore>()(
 
     updateUnionBranchOperator: (operator) =>
       set((s) => {
+        if (s.activeCteId) {
+          const cte = s.queryState.ctes.find((c) => c.id === s.activeCteId)
+          if (!cte?.queryState.unionQuery) return s
+          const updatedCteQs = { ...cte.queryState, unionQuery: { ...cte.queryState.unionQuery, operator } }
+          const next = { ...s.queryState, ctes: s.queryState.ctes.map((c) => c.id === s.activeCteId ? { ...c, queryState: updatedCteQs } : c) }
+          return { queryState: next, generatedSql: rebuildSql(next) }
+        }
         if (!s.queryState.unionQuery) return s
         const next = { ...s.queryState, unionQuery: { ...s.queryState.unionQuery, operator } }
         return { queryState: next, generatedSql: rebuildSql(next) }
@@ -240,6 +303,13 @@ export const useQueryStore = create<QueryStore>()(
 
     removeUnionBranch: () =>
       set((s) => {
+        if (s.activeCteId) {
+          const cte = s.queryState.ctes.find((c) => c.id === s.activeCteId)
+          if (!cte?.queryState.unionQuery) return s
+          const updatedCteQs = { ...cte.queryState, unionQuery: undefined }
+          const next = { ...s.queryState, ctes: s.queryState.ctes.map((c) => c.id === s.activeCteId ? { ...c, queryState: updatedCteQs } : c) }
+          return { queryState: next, generatedSql: rebuildSql(next), activeQueryPart: 'main' as const }
+        }
         const next = { ...s.queryState, unionQuery: undefined }
         return { queryState: next, generatedSql: rebuildSql(next), activeQueryPart: 'main' as const }
       }),

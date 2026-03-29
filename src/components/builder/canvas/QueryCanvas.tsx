@@ -98,23 +98,39 @@ function buildEdges(qs: QueryState): Edge[] {
     .map((j) => joinToEdge(j, qs.tables))
 }
 
-// Resolve the active queryState for the canvas based on editing modes
+// Resolve the active queryState for the canvas based on editing modes.
+// Priority matches getActiveQueryState in queryStore.ts — keep in sync.
 function resolveCanvasQueryState(
   rootQueryState: QueryState,
   activeCteId: string | null,
   activeLateralJoinId: string | null,
   activeQueryPart: 'main' | 'union',
 ): QueryState {
-  if (activeCteId) {
-    return rootQueryState.ctes.find((c) => c.id === activeCteId)?.queryState ?? rootQueryState
-  }
+  // Lateral subquery takes highest priority — searched in all contexts
   if (activeLateralJoinId) {
     const rootJoin = rootQueryState.joins.find((j) => j.id === activeLateralJoinId)
     if (rootJoin?.lateralSubquery) return rootJoin.lateralSubquery
-    const unionJoin = rootQueryState.unionQuery?.queryState.joins.find(
+    const rootUnionJoin = rootQueryState.unionQuery?.queryState.joins.find(
       (j) => j.id === activeLateralJoinId
     )
-    if (unionJoin?.lateralSubquery) return unionJoin.lateralSubquery
+    if (rootUnionJoin?.lateralSubquery) return rootUnionJoin.lateralSubquery
+    for (const cte of rootQueryState.ctes) {
+      const cteJoin = cte.queryState.joins.find((j) => j.id === activeLateralJoinId)
+      if (cteJoin?.lateralSubquery) return cteJoin.lateralSubquery
+      const cteUnionJoin = cte.queryState.unionQuery?.queryState.joins.find(
+        (j) => j.id === activeLateralJoinId
+      )
+      if (cteUnionJoin?.lateralSubquery) return cteUnionJoin.lateralSubquery
+    }
+  }
+  if (activeCteId) {
+    const cte = rootQueryState.ctes.find((c) => c.id === activeCteId)
+    if (cte) {
+      if (activeQueryPart === 'union' && cte.queryState.unionQuery) {
+        return cte.queryState.unionQuery.queryState
+      }
+      return cte.queryState
+    }
   }
   if (activeQueryPart === 'union' && rootQueryState.unionQuery) {
     return rootQueryState.unionQuery.queryState

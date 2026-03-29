@@ -7,11 +7,21 @@ import { Plus, X, AlertTriangle, CheckCircle2, ChevronDown } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import type { UnionOperator } from '@/types/query'
 
-function UnionValidationBadge() {
-  const queryState = useQueryStore((s) => s.queryState)
-  if (!queryState.unionQuery) return null
+/** Returns the queryState that "owns" the active union branch (the CTE's qs when editing a CTE, otherwise root). */
+function useActiveParentQueryState() {
+  return useQueryStore((s) => {
+    if (s.activeCteId) {
+      return s.queryState.ctes.find((c) => c.id === s.activeCteId)?.queryState ?? s.queryState
+    }
+    return s.queryState
+  })
+}
 
-  const result = validateUnion(queryState, queryState.unionQuery)
+function UnionValidationBadge() {
+  const parentQs = useActiveParentQueryState()
+  if (!parentQs.unionQuery) return null
+
+  const result = validateUnion(parentQs, parentQs.unionQuery)
 
   if (result.valid) {
     return (
@@ -34,7 +44,7 @@ function UnionValidationBadge() {
 }
 
 function OperatorDropdown() {
-  const queryState = useQueryStore((s) => s.queryState)
+  const parentQs = useActiveParentQueryState()
   const updateUnionBranchOperator = useQueryStore((s) => s.updateUnionBranchOperator)
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -48,8 +58,8 @@ function OperatorDropdown() {
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
 
-  if (!queryState.unionQuery) return null
-  const current = queryState.unionQuery.operator
+  if (!parentQs.unionQuery) return null
+  const current = parentQs.unionQuery.operator
 
   const options: UnionOperator[] = ['UNION ALL', 'UNION']
 
@@ -80,13 +90,13 @@ function OperatorDropdown() {
 }
 
 export function UnionPartSwitcher() {
-  const queryState = useQueryStore((s) => s.queryState)
+  const parentQs = useActiveParentQueryState()
   const activeQueryPart = useQueryStore((s) => s.activeQueryPart)
   const setActiveQueryPart = useQueryStore((s) => s.setActiveQueryPart)
   const addUnionBranch = useQueryStore((s) => s.addUnionBranch)
   const removeUnionBranch = useQueryStore((s) => s.removeUnionBranch)
 
-  const hasUnion = !!queryState.unionQuery
+  const hasUnion = !!parentQs.unionQuery
 
   if (!hasUnion) {
     return (

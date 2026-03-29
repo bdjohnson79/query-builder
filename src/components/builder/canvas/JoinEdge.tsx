@@ -60,7 +60,10 @@ export function JoinEdge({
   const liveJoin = useQueryStore((s) =>
     s.queryState.joins.find((j) => j.id === data?.joinId) ??
     s.queryState.unionQuery?.queryState.joins.find((j) => j.id === data?.joinId) ??
-    s.queryState.ctes.flatMap((c) => c.queryState.joins).find((j) => j.id === data?.joinId)
+    s.queryState.ctes.flatMap((c) => [
+      ...c.queryState.joins,
+      ...(c.queryState.unionQuery?.queryState.joins ?? []),
+    ]).find((j) => j.id === data?.joinId)
   )
   const onExpression = liveJoin?.onExpression ?? ''
   const [customOn, setCustomOn] = useState(onExpression)
@@ -110,7 +113,7 @@ export function JoinEdge({
               {isReference && (
                 <div className="space-y-1.5">
                   <p className="text-xs text-muted-foreground">
-                    Visual dependency arrow — no SQL is generated for this connection.
+                    CTE dependency — the JOIN is defined inside the source CTE, not in the main query. This arrow shows the reference relationship.
                   </p>
                   <Button
                     variant="destructive"
