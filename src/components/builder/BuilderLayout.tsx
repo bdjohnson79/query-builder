@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { DndContext, DragOverlay, useDndContext } from '@dnd-kit/core'
 import { TableLibrary } from './left-panel/TableLibrary'
 import { QueryCanvas } from './canvas/QueryCanvas'
@@ -21,7 +21,7 @@ import { ToastProvider } from '@/components/ui/toast'
 import { useQueryStore } from '@/store/queryStore'
 import { useJsonStructureStore } from '@/store/jsonStructureStore'
 import { api } from '@/lib/api/client'
-import { Save, FolderOpen, RotateCcw, Database, Copy, HelpCircle, LayoutTemplate, ArrowLeft, Tag, X } from 'lucide-react'
+import { Save, FolderOpen, RotateCcw, Database, Copy, HelpCircle, LayoutTemplate, ArrowLeft, Tag, X, FileDown, FileUp } from 'lucide-react'
 import type { QueryState } from '@/types/query'
 import type { QueryFolder, SavedQuery } from '@/types/schema'
 
@@ -173,6 +173,37 @@ function BuilderLayoutInner() {
     await navigator.clipboard.writeText(userEditedSql ?? generatedSql)
   }
 
+  // ── File save / load ─────────────────────────────────────────
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleSaveToFile = () => {
+    const payload = { version: 1, queryState, generatedSql }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `query-${new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-')}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleLoadFromFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ''
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target?.result as string)
+        if (!data.queryState) { alert('Invalid file: missing queryState'); return }
+        loadQueryState(data.queryState as QueryState)
+      } catch {
+        alert('Failed to parse JSON file')
+      }
+    }
+    reader.readAsText(file)
+  }
+
   return (
     <div className="flex h-screen flex-col overflow-hidden">
       {/* NavBar */}
@@ -196,6 +227,15 @@ function BuilderLayoutInner() {
             <Save className="mr-1 h-3.5 w-3.5" />
             Save
           </Button>
+          <Button variant="outline" size="sm" onClick={handleSaveToFile} title="Save query to a local JSON file">
+            <FileDown className="mr-1 h-3.5 w-3.5" />
+            Save to File
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} title="Load query from a local JSON file">
+            <FileUp className="mr-1 h-3.5 w-3.5" />
+            Load from File
+          </Button>
+          <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleLoadFromFile} />
           <Button variant="outline" size="sm" onClick={handleCopy}>
             <Copy className="mr-1 h-3.5 w-3.5" />
             Copy SQL

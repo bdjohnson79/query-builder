@@ -32,9 +32,6 @@ export function DraggableTableCard({ table, schema, columns }: Props) {
         <div className="truncate font-medium" title={table.description ?? undefined}>
           {table.name}
         </div>
-        {table.displayName && table.displayName !== table.name && (
-          <div className="truncate text-xs text-muted-foreground">{table.displayName}</div>
-        )}
         <div className="truncate text-xs text-muted-foreground">{columns.length} columns</div>
       </div>
     </div>

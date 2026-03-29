@@ -40,6 +40,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# pglite local database (runtime data, not committed)
+/data/
+
 # claude code
 .claude/
 CLAUDE.md

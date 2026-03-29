@@ -62,7 +62,7 @@ const PG_RESERVED = new Set([
   'natural','nchar','none','not','notnull','null','nullif','numeric','offset','on',
   'only','or','order','out','outer','overlaps','placing','primary','real','references',
   'returning','right','row','select','session_user','similar','smallint','some',
-  'symmetric','system_user','table','tablesample','then','time','timestamp','to',
+  'symmetric','system_user','table','tablesample','then','timestamp','to',
   'trailing','true','union','unique','user','using','values','varchar','variadic',
   'verbose','when','where','window','with',
 ])
