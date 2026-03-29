@@ -468,62 +468,20 @@ function buildStandardTimeSeriesState(schemaStore: {
 }
 
 // ---------------------------------------------------------------------------
-// Tag filtered by state: 5 rawSql CTEs + virtual table instances + custom ON
+// Tag filtered by state: 5 fully visual CTEs + REFERENCE dependency arrows
 // ---------------------------------------------------------------------------
-
-const DATA_TAGS_SQL = `SELECT name, description, location, info, labels
-FROM tag
-WHERE name = 'your_data_tag_here'`
-
-const STATE_TAGS_SQL = `SELECT name, description, location, info, labels
-FROM tag
-WHERE name = 'your_state_tag_here'`
-
-const DATA_EVENTS_SQL = `SELECT time, tag AS metric, value
-FROM event e
-INNER JOIN data_tags dt ON e.tag = dt.name
-WHERE $__timeFilter("time")
-UNION ALL
-SELECT $__timeFrom()::timestamp AS time, dt2.name AS metric, value
-FROM data_tags dt2
-LEFT JOIN LATERAL (
-    SELECT time, dt2.name, value
-    FROM event
-    WHERE time BETWEEN $__timeFrom()::timestamp - INTERVAL '30d' AND $__timeFrom()::timestamp
-        AND tag = dt2.name
-    ORDER BY time DESC
-    LIMIT 1
-) e2 ON true
-WHERE e2.value IS NOT NULL
-ORDER BY 1,2`
-
-const STATE_EVENTS_SQL = `SELECT time, tag, value
-FROM event e
-INNER JOIN state_tags st ON e.tag = st.name
-WHERE $__timeFilter("time")
-UNION ALL
-SELECT $__timeFrom()::timestamp AS time, st2.name, value
-FROM state_tags st2
-LEFT JOIN LATERAL (
-    SELECT time, st2.name, value
-    FROM event
-    WHERE time BETWEEN $__timeFrom()::timestamp - INTERVAL '30d' AND $__timeFrom()::timestamp
-        AND tag = st2.name
-    ORDER BY time DESC
-    LIMIT 1
-) e3 ON true
-WHERE e3.value IS NOT NULL
-ORDER BY 1,2`
-
-const STATE_RANGES_SQL = `SELECT tsrange(time, lead(time, 1, $__timeTo()) OVER (ORDER BY time)) AS tsrange,
-    tag, value
-FROM state_events`
 
 function buildTagFilteredByStateState(schemaStore: {
   schemas: AppSchema[]
   tables: AppTable[]
   columns: Record<number, AppColumn[]>
 }): { queryState: QueryState; userEditedSql: string | null } {
+  const { tables } = schemaStore
+  const { getSchemaName, toColumnMeta, columns } = makeHelpers(schemaStore)
+
+  const eventTable = tables.find((t) => t.name === 'event')
+  const tagTable   = tables.find((t) => t.name === 'tag')
+
   const tagEventCols: CteOutputColumn[] = [
     { name: 'name',        pgType: 'text' },
     { name: 'description', pgType: 'text' },
@@ -547,34 +505,7 @@ function buildTagFilteredByStateState(schemaStore: {
     { name: 'value',   pgType: 'float8' },
   ]
 
-  const dataTagsCteId    = crypto.randomUUID()
-  const stateTagsCteId   = crypto.randomUUID()
-  const dataEventsCteId  = crypto.randomUUID()
-  const stateEventsCteId = crypto.randomUUID()
-  const stateRangesCteId = crypto.randomUUID()
-
-  const makeCte = (
-    id: string,
-    name: string,
-    rawSql: string,
-    outputColumns: CteOutputColumn[]
-  ): CTEDef => ({
-    id,
-    name,
-    recursive: false,
-    queryState: { ...emptyQueryState(), isSubquery: true },
-    rawSql,
-    outputColumns,
-  })
-
-  const ctes: CTEDef[] = [
-    makeCte(dataTagsCteId,    'data_tags',    DATA_TAGS_SQL,    tagEventCols),
-    makeCte(stateTagsCteId,   'state_tags',   STATE_TAGS_SQL,   tagEventCols),
-    makeCte(dataEventsCteId,  'data_events',  DATA_EVENTS_SQL,  eventOutputCols),
-    makeCte(stateEventsCteId, 'state_events', STATE_EVENTS_SQL, stateEventOutputCols),
-    makeCte(stateRangesCteId, 'state_ranges', STATE_RANGES_SQL, stateRangesOutputCols),
-  ]
-
+  // Helper: CteOutputColumn[] → ColumnMeta[] for virtual table instances
   const toColMeta = (cols: CteOutputColumn[], startId = 0) =>
     cols.map((c, i) => ({
       id: startId + i,
@@ -584,45 +515,285 @@ function buildTagFilteredByStateState(schemaStore: {
       isPrimaryKey: false,
     }))
 
-  const mainTables: TableInstance[] = [
-    {
+  const dataTagsCteId    = crypto.randomUUID()
+  const stateTagsCteId   = crypto.randomUUID()
+  const dataEventsCteId  = crypto.randomUUID()
+  const stateEventsCteId = crypto.randomUUID()
+  const stateRangesCteId = crypto.randomUUID()
+
+  // ---- data_tags CTE (visual): tag WHERE name = 'your_data_tag_here' ----
+  const buildTagsCteQueryState = (tagNameFilter: string): QueryState => {
+    if (!tagTable) return { ...emptyQueryState(), isSubquery: true }
+    const tagCols = columns[tagTable.id] ?? []
+    return {
+      ...emptyQueryState(),
+      isSubquery: true,
+      tables: [{
+        id: crypto.randomUUID(),
+        tableId: tagTable.id,
+        tableName: tagTable.name,
+        schemaName: getSchemaName(tagTable.schemaId),
+        alias: 'tag',
+        position: { x: 0, y: 100 },
+        columns: toColumnMeta(tagCols),
+      }],
+      selectedColumns: tagEventCols
+        .filter((c) => tagCols.some((tc) => tc.name === c.name))
+        .map((c) => ({ id: crypto.randomUUID(), tableAlias: 'tag', columnName: c.name })),
+      where: {
+        id: crypto.randomUUID(),
+        combinator: 'AND',
+        rules: [{ id: crypto.randomUUID(), field: 'tag.name', operator: '=', value: tagNameFilter }],
+      },
+    }
+  }
+
+  const dataTagsCte: CTEDef = {
+    id: dataTagsCteId, name: 'data_tags', recursive: false,
+    queryState: buildTagsCteQueryState('your_data_tag_here'),
+    outputColumns: tagEventCols,
+  }
+  const stateTagsCte: CTEDef = {
+    id: stateTagsCteId, name: 'state_tags', recursive: false,
+    queryState: buildTagsCteQueryState('your_state_tag_here'),
+    outputColumns: tagEventCols,
+  }
+
+  // ---- Shared helper: build the LATERAL lookback branch for events CTEs ----
+  // tagAlias2: alias for the tags CTE table in the lookback branch (e.g. 'dt2', 'st2')
+  // lateralAlias: alias for the LATERAL result (e.g. 'e2', 'e3')
+  // metricAlias: alias for the tag name column in SELECT (e.g. 'metric', 'tag')
+  const buildEventsLookbackBranch = (
+    tagsCteId: string,
+    tagAlias2: string,
+    lateralAlias: string,
+    metricAlias: string,
+  ): QueryState => {
+    const eventCols = eventTable ? (columns[eventTable.id] ?? []) : []
+    const lateralSubquery: QueryState = {
+      ...emptyQueryState(),
+      isSubquery: true,
+      tables: eventTable ? [{
+        id: crypto.randomUUID(),
+        tableId: eventTable.id,
+        tableName: eventTable.name,
+        schemaName: getSchemaName(eventTable.schemaId),
+        alias: 'event',
+        position: { x: 0, y: 0 },
+        columns: toColumnMeta(eventCols),
+      }] : [],
+      selectedColumns: [
+        { id: crypto.randomUUID(), tableAlias: 'event', columnName: 'time' },
+        // outer-scope ref — SQL builder emits "tagAlias2"."name" which PostgreSQL resolves
+        { id: crypto.randomUUID(), tableAlias: tagAlias2, columnName: 'name' },
+        { id: crypto.randomUUID(), tableAlias: 'event', columnName: 'value' },
+      ],
+      where: {
+        id: crypto.randomUUID(),
+        combinator: 'AND',
+        rules: [
+          { id: crypto.randomUUID(), field: 'event.time', operator: 'timeLookback', value: '30d' },
+          { id: crypto.randomUUID(), field: 'event.tag', operator: '=', value: `${tagAlias2}.name` },
+        ],
+      },
+      orderBy: [{ tableAlias: 'event', columnName: 'time', direction: 'DESC' }],
+      limit: 1,
+    }
+    return {
+      ...emptyQueryState(),
+      tables: [{
+        id: crypto.randomUUID(),
+        tableId: 0,
+        tableName: tagsCteId === dataTagsCteId ? 'data_tags' : 'state_tags',
+        schemaName: '',
+        alias: tagAlias2,
+        cteId: tagsCteId,
+        position: { x: 0, y: 100 },
+        columns: toColMeta(tagEventCols, 50),
+      }],
+      joins: [{
+        id: crypto.randomUUID(),
+        type: 'LATERAL',
+        leftTableAlias: '',
+        leftColumn: '',
+        rightTableAlias: lateralAlias,
+        rightColumn: '',
+        lateralAlias,
+        onExpression: 'TRUE',
+        lateralSubquery,
+        canvasPosition: { x: 380, y: 100 },
+      }],
+      selectedColumns: [
+        {
+          id: crypto.randomUUID(),
+          tableAlias: '__expr__',
+          columnName: 'time',
+          expression: '$__timeFrom()::timestamp',
+          alias: 'time',
+        },
+        { id: crypto.randomUUID(), tableAlias: tagAlias2, columnName: 'name', alias: metricAlias },
+        { id: crypto.randomUUID(), tableAlias: lateralAlias, columnName: 'value' },
+      ],
+      where: {
+        id: crypto.randomUUID(),
+        combinator: 'AND',
+        rules: [{ id: crypto.randomUUID(), field: `${lateralAlias}.value`, operator: 'notNull', value: '' }],
+      },
+    }
+  }
+
+  // ---- data_events CTE (visual UNION ALL) ----
+  const eventColsMeta = eventTable ? toColumnMeta(columns[eventTable.id] ?? []) : []
+  const buildEventsCteQueryState = (
+    tagsCteId: string,
+    cteTableName: string,
+    tagsAlias: string,       // alias for tags CTE in part 1
+    tagAlias2: string,       // alias for tags CTE in lookback branch
+    lateralAlias: string,
+    metricColAlias: string | undefined, // undefined means no alias (keeps column name as-is)
+  ): QueryState => ({
+    ...emptyQueryState(),
+    isSubquery: true,
+    tables: [
+      ...(eventTable ? [{
+        id: crypto.randomUUID(),
+        tableId: eventTable.id,
+        tableName: eventTable.name,
+        schemaName: getSchemaName(eventTable.schemaId),
+        alias: 'e',
+        position: { x: 0, y: 100 },
+        columns: eventColsMeta,
+      }] : []),
+      {
+        id: crypto.randomUUID(),
+        tableId: 0,
+        tableName: cteTableName,
+        schemaName: '',
+        alias: tagsAlias,
+        cteId: tagsCteId,
+        position: { x: 400, y: 100 },
+        columns: toColMeta(tagEventCols, 50),
+      },
+    ],
+    joins: eventTable ? [{
       id: crypto.randomUUID(),
-      tableId: 0,
-      tableName: 'data_events',
-      schemaName: '',
-      alias: 'de',
-      cteId: dataEventsCteId,
-      position: { x: 0, y: 100 },
+      type: 'INNER' as const,
+      leftTableAlias: 'e',
+      leftColumn: 'tag',
+      rightTableAlias: tagsAlias,
+      rightColumn: 'name',
+    }] : [],
+    selectedColumns: [
+      { id: crypto.randomUUID(), tableAlias: 'e', columnName: 'time' },
+      { id: crypto.randomUUID(), tableAlias: 'e', columnName: 'tag', ...(metricColAlias ? { alias: metricColAlias } : {}) },
+      { id: crypto.randomUUID(), tableAlias: 'e', columnName: 'value' },
+    ],
+    where: eventTable ? {
+      id: crypto.randomUUID(),
+      combinator: 'AND',
+      rules: [{ id: crypto.randomUUID(), field: 'e.time', operator: '$__timeFilter', value: '' }],
+    } : emptyFilterGroup(),
+    // No orderBy here — UNION ALL result ordering via table-qualified names is invalid in PostgreSQL.
+    // The outer query (main SELECT) handles ORDER BY time, metric.
+    unionQuery: {
+      operator: 'UNION ALL',
+      queryState: buildEventsLookbackBranch(tagsCteId, tagAlias2, lateralAlias, metricColAlias ?? 'tag'),
+    },
+  })
+
+  const dataEventsCte: CTEDef = {
+    id: dataEventsCteId, name: 'data_events', recursive: false,
+    queryState: buildEventsCteQueryState(dataTagsCteId, 'data_tags', 'dt', 'dt2', 'e2', 'metric'),
+    outputColumns: eventOutputCols,
+  }
+  const stateEventsCte: CTEDef = {
+    id: stateEventsCteId, name: 'state_events', recursive: false,
+    queryState: buildEventsCteQueryState(stateTagsCteId, 'state_tags', 'st', 'st2', 'e3', undefined),
+    outputColumns: stateEventOutputCols,
+  }
+
+  // ---- state_ranges CTE (visual): tsrange window expression over state_events ----
+  const stateRangesCte: CTEDef = {
+    id: stateRangesCteId, name: 'state_ranges', recursive: false,
+    outputColumns: stateRangesOutputCols,
+    queryState: {
+      ...emptyQueryState(),
+      isSubquery: true,
+      tables: [{
+        id: crypto.randomUUID(),
+        tableId: 0,
+        tableName: 'state_events',
+        schemaName: '',
+        alias: 'se',
+        cteId: stateEventsCteId,
+        position: { x: 0, y: 100 },
+        columns: toColMeta(stateEventOutputCols, 60),
+      }],
+      selectedColumns: [
+        {
+          id: crypto.randomUUID(),
+          tableAlias: '__expr__',
+          columnName: 'tsrange',
+          // tsrange(start, end) where end comes from the lead() window function
+          expression: 'tsrange("se"."time", lead("se"."time", 1, $__timeTo()) OVER (ORDER BY "se"."time"))',
+          alias: 'tsrange',
+        },
+        { id: crypto.randomUUID(), tableAlias: 'se', columnName: 'tag' },
+        { id: crypto.randomUUID(), tableAlias: 'se', columnName: 'value' },
+      ],
+    },
+  }
+
+  const ctes: CTEDef[] = [dataTagsCte, stateTagsCte, dataEventsCte, stateEventsCte, stateRangesCte]
+
+  // ---- Main query: data_events de JOIN state_ranges sr ----
+  // REFERENCE joins show CTE dependency arrows on the canvas without generating SQL.
+  const mainTables: TableInstance[] = [
+    // tables[0] — primary FROM table
+    {
+      id: crypto.randomUUID(), tableId: 0, tableName: 'data_events', schemaName: '',
+      alias: 'de', cteId: dataEventsCteId,
+      position: { x: 200, y: 250 },
       columns: toColMeta(eventOutputCols),
     },
     {
-      id: crypto.randomUUID(),
-      tableId: 0,
-      tableName: 'state_ranges',
-      schemaName: '',
-      alias: 'sr',
-      cteId: stateRangesCteId,
-      position: { x: 400, y: 100 },
+      id: crypto.randomUUID(), tableId: 0, tableName: 'state_ranges', schemaName: '',
+      alias: 'sr', cteId: stateRangesCteId,
+      position: { x: 200, y: 500 },
       columns: toColMeta(stateRangesOutputCols, 10),
+    },
+    {
+      id: crypto.randomUUID(), tableId: 0, tableName: 'data_tags', schemaName: '',
+      alias: 'dt', cteId: dataTagsCteId,
+      position: { x: 200, y: 0 },
+      columns: toColMeta(tagEventCols, 20),
+    },
+    {
+      id: crypto.randomUUID(), tableId: 0, tableName: 'state_events', schemaName: '',
+      alias: 'se', cteId: stateEventsCteId,
+      position: { x: 650, y: 250 },
+      columns: toColMeta(stateEventOutputCols, 30),
+    },
+    {
+      id: crypto.randomUUID(), tableId: 0, tableName: 'state_tags', schemaName: '',
+      alias: 'st', cteId: stateTagsCteId,
+      position: { x: 650, y: 0 },
+      columns: toColMeta(tagEventCols, 40),
     },
   ]
 
   const mainJoins: JoinDef[] = [
+    // SQL join: de INNER JOIN sr
     {
-      id: crypto.randomUUID(),
-      type: 'INNER',
-      leftTableAlias: 'de',
-      leftColumn: 'time',
-      rightTableAlias: 'sr',
-      rightColumn: 'tsrange',
+      id: crypto.randomUUID(), type: 'INNER',
+      leftTableAlias: 'de', leftColumn: 'time',
+      rightTableAlias: 'sr', rightColumn: 'tsrange',
       onExpression: 'de.time <@ sr.tsrange AND sr.value = 2',
     },
-  ]
-
-  const mainSelectedColumns: SelectedColumn[] = [
-    { id: crypto.randomUUID(), tableAlias: 'de', columnName: 'time' },
-    { id: crypto.randomUUID(), tableAlias: 'de', columnName: 'metric' },
-    { id: crypto.randomUUID(), tableAlias: 'de', columnName: 'value' },
+    // Visual dependency arrows (REFERENCE = no SQL emitted)
+    { id: crypto.randomUUID(), type: 'REFERENCE', leftTableAlias: 'de', leftColumn: 'metric', rightTableAlias: 'dt', rightColumn: 'name' },
+    { id: crypto.randomUUID(), type: 'REFERENCE', leftTableAlias: 'se', leftColumn: 'tag',    rightTableAlias: 'st', rightColumn: 'name' },
+    { id: crypto.randomUUID(), type: 'REFERENCE', leftTableAlias: 'sr', leftColumn: 'tag',    rightTableAlias: 'se', rightColumn: 'tag'  },
   ]
 
   const queryState: QueryState = {
@@ -630,10 +801,14 @@ function buildTagFilteredByStateState(schemaStore: {
     ctes,
     tables: mainTables,
     joins: mainJoins,
-    selectedColumns: mainSelectedColumns,
+    selectedColumns: [
+      { id: crypto.randomUUID(), tableAlias: 'de', columnName: 'time' },
+      { id: crypto.randomUUID(), tableAlias: 'de', columnName: 'metric' },
+      { id: crypto.randomUUID(), tableAlias: 'de', columnName: 'value' },
+    ],
     orderBy: [
       { tableAlias: 'de', columnName: 'time',   direction: 'ASC' },
-      { tableAlias: 'de', columnName: 'metric',  direction: 'ASC' },
+      { tableAlias: 'de', columnName: 'metric', direction: 'ASC' },
     ],
     timeColumn: { tableAlias: 'de', columnName: 'time' },
     grafanaPanelType: 'time-series',

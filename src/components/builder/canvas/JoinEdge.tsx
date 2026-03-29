@@ -17,7 +17,7 @@ import { X, ExternalLink } from 'lucide-react'
 import type { JoinType } from '@/types/query'
 import { Label } from '@/components/ui/label'
 
-const JOIN_TYPES: JoinType[] = ['INNER', 'LEFT', 'RIGHT', 'FULL OUTER', 'CROSS', 'LATERAL']
+const JOIN_TYPES: JoinType[] = ['INNER', 'LEFT', 'RIGHT', 'FULL OUTER', 'CROSS', 'LATERAL', 'REFERENCE']
 
 const JOIN_COLORS: Record<JoinType, string> = {
   INNER: '#3b82f6',
@@ -26,6 +26,7 @@ const JOIN_COLORS: Record<JoinType, string> = {
   'FULL OUTER': '#8b5cf6',
   CROSS: '#ef4444',
   LATERAL: '#06b6d4',
+  REFERENCE: '#94a3b8',
 }
 
 interface JoinEdgeData {
@@ -67,11 +68,13 @@ export function JoinEdge({
 
   const joinType = data?.joinType ?? 'INNER'
   const isLateral = joinType === 'LATERAL'
+  const isReference = joinType === 'REFERENCE'
   const hasCustomOn = !!liveJoin?.onExpression?.trim()
-  const color = isLateral ? JOIN_COLORS.LATERAL : hasCustomOn ? '#6366f1' : JOIN_COLORS[joinType]
+  const color = isLateral ? JOIN_COLORS.LATERAL : isReference ? JOIN_COLORS.REFERENCE : hasCustomOn ? '#6366f1' : JOIN_COLORS[joinType]
 
   const label = isLateral
     ? `LATERAL${liveJoin?.lateralAlias ? ` (${liveJoin.lateralAlias})` : ''}`
+    : isReference ? 'uses'
     : hasCustomOn ? 'CUSTOM' : joinType
 
   return (
@@ -79,7 +82,12 @@ export function JoinEdge({
       <BaseEdge
         id={id}
         path={edgePath}
-        style={{ stroke: color, strokeWidth: 2, strokeDasharray: isLateral ? '6 3' : undefined }}
+        style={{
+          stroke: color,
+          strokeWidth: isReference ? 1.5 : 2,
+          strokeDasharray: isLateral ? '6 3' : isReference ? '4 4' : undefined,
+          opacity: isReference ? 0.7 : 1,
+        }}
       />
       <EdgeLabelRenderer>
         <div
@@ -99,10 +107,26 @@ export function JoinEdge({
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-64 p-2 space-y-3">
-              <div>
+              {isReference && (
+                <div className="space-y-1.5">
+                  <p className="text-xs text-muted-foreground">
+                    Visual dependency arrow — no SQL is generated for this connection.
+                  </p>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => data?.joinId && removeJoin(data.joinId)}
+                  >
+                    <X className="mr-1 h-3 w-3" />
+                    Remove
+                  </Button>
+                </div>
+              )}
+              {!isReference && <div>
                 <div className="mb-1 text-xs font-semibold text-muted-foreground">Join Type</div>
                 <div className="space-y-1">
-                  {JOIN_TYPES.map((jt) => (
+                  {JOIN_TYPES.filter((jt) => jt !== 'REFERENCE').map((jt) => (
                     <button
                       key={jt}
                       className="w-full rounded px-2 py-1 text-left text-sm hover:bg-muted"
@@ -119,9 +143,9 @@ export function JoinEdge({
                     </button>
                   ))}
                 </div>
-              </div>
+              </div>}
 
-              {isLateral ? (
+              {!isReference && (isLateral ? (
                 <>
                   <div className="border-t pt-2 space-y-1">
                     <Label className="text-xs">Lateral alias</Label>
@@ -213,7 +237,7 @@ export function JoinEdge({
                     </Button>
                   </div>
                 </>
-              )}
+              ))}
             </PopoverContent>
           </Popover>
         </div>

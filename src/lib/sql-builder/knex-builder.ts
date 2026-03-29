@@ -151,7 +151,8 @@ function buildRawSql(state: QueryState, omitTrailer = false): string {
   // introduced at each step and emit: JOIN <newTable> ON <inScopeCol> = <newTableCol>.
   {
     const inScope = new Set<string>([primaryTable.alias])
-    const pending = [...joins]
+    // REFERENCE joins are visual-only dependency arrows — exclude from SQL emission entirely
+    const pending = joins.filter((j) => j.type !== 'REFERENCE')
 
     let safetyLimit = joins.length * joins.length + 1
     while (pending.length > 0 && safetyLimit-- > 0) {

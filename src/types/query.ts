@@ -3,7 +3,8 @@
 import type { JsonbMapping } from './json-structure'
 export type { JsonbMapping }
 
-export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL OUTER' | 'CROSS' | 'LATERAL'
+/** REFERENCE is a visual-only dependency arrow — it renders on the canvas but emits no SQL. */
+export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL OUTER' | 'CROSS' | 'LATERAL' | 'REFERENCE'
 
 export type UnionOperator = 'UNION ALL' | 'UNION'
 
