@@ -14,9 +14,9 @@ import { FileCode, AlertTriangle, CheckCircle, ChevronDown, Upload } from 'lucid
 import { parseSqlToQueryState } from '@/lib/sql-parser/grafana-sql-importer'
 import {
   extractGrafanaPanelTargets,
-  mapGrafanaPanelType,
   type GrafanaPanelTarget,
 } from '@/lib/sql-parser/grafana-dashboard-extractor'
+import { emptyQueryState } from '@/types/query'
 import type { QueryState } from '@/types/query'
 import type { GrafanaPanelType } from '@/types/query'
 
@@ -36,6 +36,8 @@ interface ParsedPreview {
   detectedTables: string[]
   unknownWarnings: string[]
   sql: string
+  /** Present when structural parsing failed — import as raw SQL instead. */
+  rawSql?: string
 }
 
 // ── Tabs ─────────────────────────────────────────────────────────────────
@@ -49,9 +51,10 @@ export function ImportSqlDialog({ open, onClose }: Props) {
   const columns    = useSchemaStore((s) => s.columns)
   const schemas    = useSchemaStore((s) => s.schemas)
 
-  const loadQueryState = useQueryStore((s) => s.loadQueryState)
-  const setPanelType   = useQueryStore((s) => s.setPanelType)
-  const setTimeColumn  = useQueryStore((s) => s.setTimeColumn)
+  const loadQueryState    = useQueryStore((s) => s.loadQueryState)
+  const setPanelType      = useQueryStore((s) => s.setPanelType)
+  const setTimeColumn     = useQueryStore((s) => s.setTimeColumn)
+  const setUserEditedSql  = useQueryStore((s) => s.setUserEditedSql)
 
   // ── Tab state ───────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<TabId>('paste')
@@ -89,6 +92,7 @@ export function ImportSqlDialog({ open, onClose }: Props) {
       detectedTables,
       unknownWarnings,
       sql,
+      rawSql: result.rawSql,
     })
   }
 
@@ -141,6 +145,19 @@ export function ImportSqlDialog({ open, onClose }: Props) {
     }
   }
 
+  function handleImportRawSql() {
+    if (!preview?.rawSql) return
+    setImporting(true)
+    try {
+      loadQueryState(emptyQueryState())
+      setUserEditedSql(preview.rawSql)
+      onClose()
+      resetState()
+    } finally {
+      setImporting(false)
+    }
+  }
+
   function resetState() {
     setSqlText('')
     setPanelTargets([])
@@ -157,6 +174,7 @@ export function ImportSqlDialog({ open, onClose }: Props) {
 
   const selectedTarget = panelTargets[selectedTargetIdx]
   const canImport = preview !== null && preview.queryState.tables.length > 0
+  const canImportRaw = preview !== null && !!preview.rawSql && !canImport
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
@@ -308,6 +326,16 @@ export function ImportSqlDialog({ open, onClose }: Props) {
           <Button variant="outline" onClick={handleClose}>
             Cancel
           </Button>
+          {canImportRaw && (
+            <Button
+              variant="outline"
+              onClick={handleImportRawSql}
+              disabled={importing}
+              className="border-amber-400 text-amber-700 hover:bg-amber-50"
+            >
+              {importing ? 'Importing…' : 'Import as Raw SQL'}
+            </Button>
+          )}
           <Button
             onClick={handleImport}
             disabled={!canImport || importing}

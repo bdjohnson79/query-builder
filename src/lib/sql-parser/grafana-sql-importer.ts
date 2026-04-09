@@ -49,6 +49,8 @@ export interface ImportResult {
   queryState: QueryState
   warnings: string[]
   detectedPanelType?: GrafanaPanelType
+  /** Set when the SQL could not be structurally parsed — import as raw SQL instead. */
+  rawSql?: string
 }
 
 // ── Macro preprocessing ────────────────────────────────────────────────────
@@ -1013,8 +1015,9 @@ export function parseSqlToQueryState(
     rawAst = parser.astify(masked, { database: 'PostgreSQL' }) as AstNode
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    warnings.push(`SQL parse error: ${msg}. The SQL could not be imported.`)
-    return { queryState: emptyQueryState(), warnings }
+    warnings.push(`SQL parse error: ${msg}`)
+    warnings.push('This query uses syntax not supported by the visual parser (e.g. PostgreSQL-specific operators, ORDER BY inside aggregates, AT TIME ZONE). You can still import it as raw SQL to view and edit it in the SQL editor.')
+    return { queryState: emptyQueryState(), warnings, rawSql: sql.trim() }
   }
 
   // Handle array result (multiple statements — use first)
