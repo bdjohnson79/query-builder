@@ -1025,3 +1025,910 @@ describe('error handling', () => {
     expect(sql).toMatch(/--/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Aggregate functions in SELECT
+// ---------------------------------------------------------------------------
+
+describe('aggregates in SELECT', () => {
+  const simpleAggregates = ['COUNT', 'SUM', 'AVG', 'MIN', 'MAX'] as const
+
+  for (const agg of simpleAggregates) {
+    it(`wraps column with ${agg}(...)`, () => {
+      const alias = 's'
+      const col = 'amount'
+      const state = makeState({
+        tables: [makeTable({ alias, tableName: 'sales' })],
+        selectedColumns: [makeCol(alias, col, { aggregate: agg })],
+      })
+      const sql = normalise(buildSql(state))
+      expect(sql).toContain(`${agg}(${alias}.${col})`)
+    })
+  }
+
+  it('emits COUNT(DISTINCT col) for COUNT DISTINCT', () => {
+    const alias = 'o'
+    const col = 'customer_id'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      selectedColumns: [makeCol(alias, col, { aggregate: 'COUNT DISTINCT' })],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain(`COUNT(DISTINCT ${alias}.${col})`)
+  })
+
+  it('emits PERCENTILE_CONT(fraction) WITHIN GROUP (ORDER BY col) for PERCENTILE_CONT', () => {
+    const alias = 'o'
+    const col = 'response_ms'
+    const fraction = '0.95'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      selectedColumns: [makeCol(alias, col, { aggregate: 'PERCENTILE_CONT', aggregateArg: fraction })],
+    })
+    const sql = normalise(buildSql(state))
+    // sql-formatter inserts a space after '(' in WITHIN GROUP: '( ORDER BY'
+    expect(sql).toMatch(new RegExp(`PERCENTILE_CONT\\(${fraction}\\) WITHIN GROUP \\( ORDER BY ${alias}\\.${col}`))
+  })
+
+  it('PERCENTILE_CONT defaults to 0.5 when aggregateArg is absent', () => {
+    const alias = 'o'
+    const col = 'score'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      selectedColumns: [makeCol(alias, col, { aggregate: 'PERCENTILE_CONT' })],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('PERCENTILE_CONT(0.5)')
+  })
+
+  it('emits PERCENTILE_DISC(fraction) WITHIN GROUP (ORDER BY col)', () => {
+    const alias = 'o'
+    const col = 'latency'
+    const fraction = '0.99'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      selectedColumns: [makeCol(alias, col, { aggregate: 'PERCENTILE_DISC', aggregateArg: fraction })],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toMatch(new RegExp(`PERCENTILE_DISC\\(${fraction}\\) WITHIN GROUP \\( ORDER BY ${alias}\\.${col}`))
+  })
+
+  it('emits STRING_AGG(col, default delimiter) when aggregateArg is absent', () => {
+    const alias = 't'
+    const col = 'tag_name'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'tags' })],
+      selectedColumns: [makeCol(alias, col, { aggregate: 'STRING_AGG' })],
+    })
+    const sql = normalise(buildSql(state))
+    // Default delimiter is ", "
+    expect(sql).toContain(`STRING_AGG(${alias}.${col},`)
+    expect(sql).toContain("', '")
+  })
+
+  it('emits STRING_AGG with a custom delimiter', () => {
+    const alias = 't'
+    const col = 'tag_name'
+    const delim = '|'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'tags' })],
+      selectedColumns: [makeCol(alias, col, { aggregate: 'STRING_AGG', aggregateArg: delim })],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain(`STRING_AGG(${alias}.${col},`)
+    expect(sql).toContain(`'${delim}'`)
+  })
+
+  it('emits FILTER (WHERE ...) after an aggregate when filterClause is set', () => {
+    const alias = 'o'
+    const col = 'amount'
+    const filterClause = "status = 'completed'"
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      selectedColumns: [makeCol(alias, col, { aggregate: 'SUM', filterClause })],
+    })
+    const sql = normalise(buildSql(state))
+    // sql-formatter inserts a space after '(': 'FILTER ( WHERE'
+    expect(sql).toContain('FILTER (')
+    expect(sql).toContain('WHERE')
+    expect(sql).toContain(filterClause)
+  })
+
+  it('does not emit FILTER when filterClause is set but there is no aggregate', () => {
+    const alias = 'o'
+    const col = 'amount'
+    const filterClause = "status = 'completed'"
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      selectedColumns: [makeCol(alias, col, { filterClause })],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).not.toContain('FILTER')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// HAVING clause
+// ---------------------------------------------------------------------------
+
+describe('HAVING clause', () => {
+  it('emits HAVING with a simple aggregate condition', () => {
+    const alias = 'o'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      selectedColumns: [makeCol(alias, 'customer_id'), makeCol(alias, 'id', { aggregate: 'COUNT' })],
+      groupBy: [{ tableAlias: alias, columnName: 'customer_id' }],
+      having: makeGroup('AND', [makeRule(`${alias}.id`, '>', 5)]),
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('HAVING')
+    expect(sql).toContain(`${alias}.id > 5`)
+  })
+
+  it('omits HAVING when having group has no rules', () => {
+    const alias = 'o'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+    })
+    const sql = buildSql(state)
+    expect(sql).not.toContain('HAVING')
+  })
+
+  it('HAVING appears after GROUP BY in the emitted SQL', () => {
+    const alias = 'o'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      selectedColumns: [makeCol(alias, 'region'), makeCol(alias, 'total', { aggregate: 'SUM' })],
+      groupBy: [{ tableAlias: alias, columnName: 'region' }],
+      having: makeGroup('AND', [makeRule(`${alias}.total`, '>=', 1000)]),
+    })
+    const sql = normalise(buildSql(state))
+    const groupByIdx = sql.indexOf('GROUP BY')
+    const havingIdx = sql.indexOf('HAVING')
+    expect(groupByIdx).toBeLessThan(havingIdx)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// UNION ALL / UNION
+// ---------------------------------------------------------------------------
+
+describe('UNION queries', () => {
+  it('emits UNION ALL between the two SELECT branches', () => {
+    const aliasA = 'a'
+    const aliasB = 'b'
+    const branchState = makeState({
+      tables: [makeTable({ alias: aliasB, tableName: 'archived_orders' })],
+      selectedColumns: [makeCol(aliasB, 'id'), makeCol(aliasB, 'total')],
+    })
+    const state = makeState({
+      tables: [makeTable({ alias: aliasA, tableName: 'orders' })],
+      selectedColumns: [makeCol(aliasA, 'id'), makeCol(aliasA, 'total')],
+      unionQuery: { operator: 'UNION ALL', queryState: branchState },
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('UNION ALL')
+    expect(sql).toContain(`${aliasA}.id`)
+    expect(sql).toContain(`${aliasB}.id`)
+  })
+
+  it('emits UNION (deduplicated) when operator is UNION', () => {
+    const aliasA = 'c'
+    const aliasB = 'd'
+    const branchState = makeState({
+      tables: [makeTable({ alias: aliasB, tableName: 'legacy_customers' })],
+      selectedColumns: [makeCol(aliasB, 'email')],
+    })
+    const state = makeState({
+      tables: [makeTable({ alias: aliasA, tableName: 'customers' })],
+      selectedColumns: [makeCol(aliasA, 'email')],
+      unionQuery: { operator: 'UNION', queryState: branchState },
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain(' UNION ')
+    expect(sql).not.toContain('UNION ALL')
+  })
+
+  it('emits the rawSql branch verbatim when unionQuery.rawSql is set', () => {
+    const alias = 'o'
+    const rawBranchSql = 'SELECT 1 AS id, 99.99 AS total'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      selectedColumns: [makeCol(alias, 'id'), makeCol(alias, 'total')],
+      unionQuery: { operator: 'UNION ALL', queryState: emptyQueryState(), rawSql: rawBranchSql },
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('UNION ALL')
+    expect(sql).toContain(rawBranchSql)
+  })
+
+  it('places ORDER BY / LIMIT / OFFSET after the UNION branch, not inside the first SELECT', () => {
+    const alias = 'o'
+    const branchAlias = 'a'
+    const branchState = makeState({
+      tables: [makeTable({ alias: branchAlias, tableName: 'archived_orders' })],
+      selectedColumns: [makeCol(branchAlias, 'id')],
+    })
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      selectedColumns: [makeCol(alias, 'id')],
+      orderBy: [{ tableAlias: alias, columnName: 'id', direction: 'ASC' }],
+      limit: 100,
+      offset: 0,
+      unionQuery: { operator: 'UNION ALL', queryState: branchState },
+    })
+    const sql = normalise(buildSql(state))
+    const unionIdx = sql.indexOf('UNION ALL')
+    const orderIdx = sql.indexOf('ORDER BY')
+    const limitIdx = sql.indexOf('LIMIT')
+    // ORDER BY and LIMIT must appear after UNION ALL
+    expect(orderIdx).toBeGreaterThan(unionIdx)
+    expect(limitIdx).toBeGreaterThan(unionIdx)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// JOIN topology edge cases
+// ---------------------------------------------------------------------------
+
+describe('JOIN topology', () => {
+  it('ON clause is correct when join arrow is drawn right-to-left (reversed direction)', () => {
+    // The right table is listed first in tables[], join goes right→left
+    const leftAlias = 'o'
+    const rightAlias = 'c'
+    const leftCol = 'customer_id'
+    const rightCol = 'id'
+    const tableO = makeTable({ alias: leftAlias, tableName: 'orders' })
+    const tableC = makeTable({ alias: rightAlias, tableName: 'customers' })
+    // Join is drawn from customers (c) to orders (o) — reversed from conventional
+    const join: JoinDef = {
+      id: crypto.randomUUID(),
+      type: 'LEFT',
+      leftTableAlias: rightAlias,  // c (customers)
+      leftColumn: rightCol,        // c.id
+      rightTableAlias: leftAlias,  // o (orders)
+      rightColumn: leftCol,        // o.customer_id
+    }
+    // Primary table is orders (o); customers (c) needs to be joined in
+    const state = makeState({ tables: [tableO, tableC], joins: [join] })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('LEFT JOIN')
+    // ON clause uses table aliases (o, c) — not table names
+    expect(sql).toMatch(/c\.id = o\.customer_id|o\.customer_id = c\.id/)
+  })
+
+  it('custom onExpression overrides the generated ON clause', () => {
+    const leftAlias = 'o'
+    const rightAlias = 'c'
+    const customOn = 'o.customer_id = c.id AND c.active = TRUE'
+    const tableO = makeTable({ alias: leftAlias, tableName: 'orders' })
+    const tableC = makeTable({ alias: rightAlias, tableName: 'customers' })
+    const join: JoinDef = {
+      id: crypto.randomUUID(),
+      type: 'INNER',
+      leftTableAlias: leftAlias,
+      leftColumn: 'customer_id',
+      rightTableAlias: rightAlias,
+      rightColumn: 'id',
+      onExpression: customOn,
+    }
+    const state = makeState({ tables: [tableO, tableC], joins: [join] })
+    const sql = normalise(buildSql(state))
+    // Custom ON condition parts must appear
+    expect(sql).toContain('o.customer_id = c.id')
+    expect(sql).toContain('c.active = TRUE')
+    // The AND combinator within the custom ON must also be present
+    expect(sql).toContain('AND')
+  })
+
+  it('REFERENCE joins are excluded from SQL entirely', () => {
+    const leftAlias = 'a'
+    const rightAlias = 'b'
+    const tableA = makeTable({ alias: leftAlias, tableName: 'table_a' })
+    const tableB = makeTable({ alias: rightAlias, tableName: 'table_b' })
+    const refJoin: JoinDef = {
+      id: crypto.randomUUID(),
+      type: 'REFERENCE',
+      leftTableAlias: leftAlias,
+      leftColumn: 'id',
+      rightTableAlias: rightAlias,
+      rightColumn: 'a_id',
+    }
+    // Only one real table to ensure the REFERENCE is the only join
+    const state = makeState({ tables: [tableA, tableB], joins: [refJoin] })
+    const sql = normalise(buildSql(state))
+    expect(sql).not.toContain('JOIN')
+  })
+
+  it('resolves a three-table chain A→B→C regardless of join order in array', () => {
+    const tA = makeTable({ alias: 'a', tableName: 'table_a' })
+    const tB = makeTable({ alias: 'b', tableName: 'table_b' })
+    const tC = makeTable({ alias: 'c', tableName: 'table_c' })
+    const joinBC: JoinDef = {
+      id: crypto.randomUUID(),
+      type: 'INNER',
+      leftTableAlias: 'b',
+      leftColumn: 'id',
+      rightTableAlias: 'c',
+      rightColumn: 'b_id',
+    }
+    const joinAB: JoinDef = {
+      id: crypto.randomUUID(),
+      type: 'INNER',
+      leftTableAlias: 'a',
+      leftColumn: 'id',
+      rightTableAlias: 'b',
+      rightColumn: 'a_id',
+    }
+    // Deliberately put B→C join first (out of topological order)
+    const state = makeState({ tables: [tA, tB, tC], joins: [joinBC, joinAB] })
+    const sql = normalise(buildSql(state))
+    // Both joins must appear
+    expect(sql).toContain('a.id = b.a_id')
+    expect(sql).toContain('b.id = c.b_id')
+    // B must be joined before C (B comes into scope via A→B, then C via B→C)
+    const bIdx = sql.indexOf('table_b')
+    const cIdx = sql.indexOf('table_c')
+    expect(bIdx).toBeLessThan(cIdx)
+  })
+
+  it('falls back to emitting disconnected joins when no topological order exists', () => {
+    // Two isolated tables with a join between them — neither is connected to the primary table
+    const tPrimary = makeTable({ alias: 'p', tableName: 'primary_t' })
+    const tX = makeTable({ alias: 'x', tableName: 'x_table' })
+    const tY = makeTable({ alias: 'y', tableName: 'y_table' })
+    const isolatedJoin: JoinDef = {
+      id: crypto.randomUUID(),
+      type: 'INNER',
+      leftTableAlias: 'x',
+      leftColumn: 'id',
+      rightTableAlias: 'y',  // fallback emits the right table
+      rightColumn: 'x_id',
+    }
+    const state = makeState({ tables: [tPrimary, tX, tY], joins: [isolatedJoin] })
+    const sql = normalise(buildSql(state))
+    // SQL must not throw and must emit the primary table
+    expect(sql).toContain('FROM primary_t')
+    // Fallback emits the rightTableAlias's table (y_table)
+    expect(sql).toContain('y_table')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// JSONB expansions (CROSS JOIN jsonb_to_record)
+// ---------------------------------------------------------------------------
+
+describe('JSONB expansions (jsonb_to_record)', () => {
+  it('emits CROSS JOIN jsonb_to_record for a jsonbExpansion with fields', () => {
+    const alias = 'ae'
+    const col = 'info'
+    const expandAlias = 'i'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'audit_events' })],
+      jsonbExpansions: [{
+        id: crypto.randomUUID(),
+        tableAlias: alias,
+        columnName: col,
+        expandAlias,
+        fields: [
+          { name: 'machine_name', pgType: 'text' },
+          { name: 'rpm', pgType: 'numeric' },
+        ],
+      }],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('CROSS JOIN jsonb_to_record')
+    expect(sql).toContain(`${alias}.${col}`)
+    expect(sql).toContain(`${expandAlias}`)
+    expect(sql).toContain('machine_name text')
+    expect(sql).toContain('rpm numeric')
+  })
+
+  it('skips a jsonbExpansion with no fields', () => {
+    const alias = 'ae'
+    const col = 'info'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'audit_events' })],
+      jsonbExpansions: [{
+        id: crypto.randomUUID(),
+        tableAlias: alias,
+        columnName: col,
+        expandAlias: 'i',
+        fields: [],
+      }],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).not.toContain('jsonb_to_record')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// JSONB array unnesting (LATERAL jsonb_array_elements / jsonb_to_recordset)
+// ---------------------------------------------------------------------------
+
+describe('JSONB array unnesting', () => {
+  it('emits CROSS JOIN LATERAL jsonb_array_elements for elements mode with single-segment path', () => {
+    const alias = 'ae'
+    const col = 'payload'
+    const arrayPath = 'faults'
+    const unnestAlias = 'f'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'audit_events' })],
+      jsonbArrayUnnestings: [{
+        id: crypto.randomUUID(),
+        tableAlias: alias,
+        columnName: col,
+        arrayPath,
+        unnestAlias,
+        mode: 'elements',
+        recordsetFields: [],
+      }],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('CROSS JOIN LATERAL jsonb_array_elements')
+    expect(sql).toContain(`${alias}.${col} -> '${arrayPath}'`)
+    expect(sql).toContain(`AS ${unnestAlias}`)
+  })
+
+  it('uses #> operator for multi-segment arrayPath in elements mode', () => {
+    const alias = 'ae'
+    const col = 'data'
+    const arrayPath = 'config.items'
+    const unnestAlias = 'it'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'audit_events' })],
+      jsonbArrayUnnestings: [{
+        id: crypto.randomUUID(),
+        tableAlias: alias,
+        columnName: col,
+        arrayPath,
+        unnestAlias,
+        mode: 'elements',
+        recordsetFields: [],
+      }],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('jsonb_array_elements')
+    expect(sql).toContain(`${alias}.${col} #> '{config,items}'`)
+  })
+
+  it('emits CROSS JOIN LATERAL jsonb_to_recordset for recordset mode with fields', () => {
+    const alias = 'ae'
+    const col = 'payload'
+    const arrayPath = 'sensors'
+    const unnestAlias = 's'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'audit_events' })],
+      jsonbArrayUnnestings: [{
+        id: crypto.randomUUID(),
+        tableAlias: alias,
+        columnName: col,
+        arrayPath,
+        unnestAlias,
+        mode: 'recordset',
+        recordsetFields: [
+          { name: 'sensor_id', pgType: 'integer' },
+          { name: 'reading', pgType: 'float8' },
+        ],
+      }],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('CROSS JOIN LATERAL jsonb_to_recordset')
+    expect(sql).toContain('sensor_id integer')
+    expect(sql).toContain('reading float8')
+  })
+
+  it('skips a recordset unnesting with no fields', () => {
+    const alias = 'ae'
+    const col = 'payload'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'audit_events' })],
+      jsonbArrayUnnestings: [{
+        id: crypto.randomUUID(),
+        tableAlias: alias,
+        columnName: col,
+        arrayPath: 'items',
+        unnestAlias: 'it',
+        mode: 'recordset',
+        recordsetFields: [],
+      }],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).not.toContain('jsonb_to_recordset')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// TimescaleDB time_bucket / time_bucket_gapfill
+// ---------------------------------------------------------------------------
+
+describe('TimescaleDB time_bucket', () => {
+  it('adds time_bucket(...) AS alias to SELECT and GROUP BY', () => {
+    const alias = 'm'
+    const timeCol = 'recorded_at'
+    const interval = '1 hour'
+    const bucketAlias = 'bucket'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'metrics' })],
+      selectedColumns: [makeCol(alias, 'value', { aggregate: 'AVG' })],
+      groupBy: [],
+      timescaleBucket: {
+        columnRef: { tableAlias: alias, columnName: timeCol },
+        interval,
+        alias: bucketAlias,
+        gapfill: false,
+      },
+    })
+    const sql = normalise(buildSql(state))
+    // sql-formatter may insert a space between the function name and '('
+    expect(sql).toMatch(/time_bucket\s*\('1 hour',\s*m\.recorded_at\)/)
+    expect(sql).toContain(`AS ${bucketAlias}`)
+    expect(sql).toContain('GROUP BY')
+  })
+
+  it('uses time_bucket_gapfill when gapfill is true', () => {
+    const alias = 'm'
+    const timeCol = 'ts'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'metrics' })],
+      timescaleBucket: {
+        columnRef: { tableAlias: alias, columnName: timeCol },
+        interval: '5 minutes',
+        alias: 'time',
+        gapfill: true,
+      },
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('time_bucket_gapfill')
+  })
+
+  it('emits Grafana $__interval variable unquoted in time_bucket', () => {
+    const alias = 'm'
+    const timeCol = 'ts'
+    const grafanaInterval = '$__interval'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'metrics' })],
+      timescaleBucket: {
+        columnRef: { tableAlias: alias, columnName: timeCol },
+        interval: grafanaInterval,
+        alias: 'time',
+        gapfill: false,
+      },
+    })
+    const sql = normalise(buildSql(state))
+    // $__interval is a Grafana macro — preserved unquoted; formatter may add space before '('
+    expect(sql).toMatch(/time_bucket\s*\(\$__interval,/)
+    expect(sql).not.toContain(`'${grafanaInterval}'`)
+  })
+
+  it('wraps a column in locf() when gapfill is active and strategy is locf', () => {
+    const alias = 'm'
+    const timeCol = 'ts'
+    const valueCol = 'cpu_pct'
+    const col = makeCol(alias, valueCol, { aggregate: 'AVG' })
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'metrics' })],
+      selectedColumns: [col],
+      timescaleBucket: {
+        columnRef: { tableAlias: alias, columnName: timeCol },
+        interval: '1 hour',
+        alias: 'time',
+        gapfill: true,
+      },
+      gapfillStrategies: [{ selectedColumnId: col.id, strategy: 'locf' }],
+    })
+    const sql = normalise(buildSql(state))
+    // sql-formatter may insert a space before '('
+    expect(sql).toMatch(/locf\s*\(/)
+  })
+
+  it('wraps a column in interpolate() when gapfill is active and strategy is interpolate', () => {
+    const alias = 'm'
+    const timeCol = 'ts'
+    const valueCol = 'temp'
+    const col = makeCol(alias, valueCol, { aggregate: 'AVG' })
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'metrics' })],
+      selectedColumns: [col],
+      timescaleBucket: {
+        columnRef: { tableAlias: alias, columnName: timeCol },
+        interval: '1 hour',
+        alias: 'time',
+        gapfill: true,
+      },
+      gapfillStrategies: [{ selectedColumnId: col.id, strategy: 'interpolate' }],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toMatch(/interpolate\s*\(/)
+  })
+
+  it('does not wrap columns in gapfill strategies when gapfill is false', () => {
+    const alias = 'm'
+    const timeCol = 'ts'
+    const valueCol = 'cpu_pct'
+    const col = makeCol(alias, valueCol, { aggregate: 'AVG' })
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'metrics' })],
+      selectedColumns: [col],
+      timescaleBucket: {
+        columnRef: { tableAlias: alias, columnName: timeCol },
+        interval: '1 hour',
+        alias: 'time',
+        gapfill: false,
+      },
+      gapfillStrategies: [{ selectedColumnId: col.id, strategy: 'locf' }],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).not.toContain('locf(')
+    expect(sql).not.toContain('interpolate(')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// CTEs — extended cases
+// ---------------------------------------------------------------------------
+
+describe('CTEs — extended', () => {
+  it('uses rawSql verbatim when CTEDef.rawSql is set, ignoring queryState', () => {
+    const cteName = 'raw_cte'
+    const rawSql = 'SELECT 1 AS id, now() AS created_at'
+    const cte: CTEDef = {
+      id: crypto.randomUUID(),
+      name: cteName,
+      recursive: false,
+      queryState: emptyQueryState(),  // should be ignored
+      rawSql,
+      outputColumns: [],
+    }
+    const state = makeState({
+      tables: [makeTable({ alias: 'r', tableName: cteName })],
+      ctes: [cte],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain(rawSql)
+  })
+
+  it('emits anchor UNION ALL recursiveStep for guided recursive CTEs', () => {
+    const cteName = 'hierarchy'
+    const anchorSql = 'SELECT id, parent_id, name FROM categories WHERE parent_id IS NULL'
+    const recursiveStepSql = 'SELECT c.id, c.parent_id, c.name FROM categories c JOIN hierarchy h ON c.parent_id = h.id'
+    const cte: CTEDef = {
+      id: crypto.randomUUID(),
+      name: cteName,
+      recursive: true,
+      recursiveMode: 'guided',
+      anchorSql,
+      recursiveStepSql,
+      queryState: emptyQueryState(),
+      outputColumns: [],
+    }
+    const state = makeState({
+      tables: [makeTable({ alias: 'h', tableName: cteName })],
+      ctes: [cte],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('WITH RECURSIVE')
+    expect(sql).toContain(anchorSql)
+    expect(sql).toContain('UNION ALL')
+    expect(sql).toContain(recursiveStepSql)
+  })
+
+  it('emits multiple CTEs separated by commas', () => {
+    const cte1Name = 'cte_one'
+    const cte2Name = 'cte_two'
+    const cte1: CTEDef = {
+      id: crypto.randomUUID(),
+      name: cte1Name,
+      recursive: false,
+      queryState: makeState({ tables: [makeTable({ alias: 'x', tableName: 'source_a' })] }),
+      outputColumns: [],
+    }
+    const cte2: CTEDef = {
+      id: crypto.randomUUID(),
+      name: cte2Name,
+      recursive: false,
+      queryState: makeState({ tables: [makeTable({ alias: 'y', tableName: 'source_b' })] }),
+      outputColumns: [],
+    }
+    const state = makeState({
+      tables: [makeTable({ alias: 'z', tableName: cte1Name })],
+      ctes: [cte1, cte2],
+    })
+    const sql = normalise(buildSql(state))
+    // Both CTEs must be defined with their AS ( ... ) syntax in the WITH block
+    expect(sql).toContain(`${cte1Name} AS (`)
+    expect(sql).toContain(`${cte2Name} AS (`)
+    // cte2 definition must appear before the outer FROM clause
+    const cte2DefIdx = sql.indexOf(`${cte2Name} AS (`)
+    const outerFromIdx = sql.lastIndexOf('FROM')
+    expect(cte2DefIdx).toBeLessThan(outerFromIdx)
+  })
+
+  it('emits no schema prefix for CTE virtual tables (schemaName is empty string)', () => {
+    const cteName = 'my_cte'
+    const cte: CTEDef = {
+      id: crypto.randomUUID(),
+      name: cteName,
+      recursive: false,
+      queryState: makeState({ tables: [makeTable({ alias: 's', tableName: 'source' })] }),
+      outputColumns: [],
+    }
+    // CTE virtual table has schemaName = ''
+    const virtualTable: TableInstance = makeTable({ alias: cteName, tableName: cteName, schemaName: '' })
+    const state = makeState({
+      tables: [virtualTable],
+      ctes: [cte],
+    })
+    const sql = normalise(buildSql(state))
+    // FROM clause should reference just the CTE name, never "schema".cteName
+    expect(sql).toContain(`FROM ${cteName}`)
+    expect(sql).not.toMatch(new RegExp(`\\.${cteName}`))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Grafana macro preservation through sql-formatter
+// ---------------------------------------------------------------------------
+
+describe('Grafana macro preservation', () => {
+  it('$__timeFilter macro survives sql-formatter unchanged', () => {
+    const alias = 'm'
+    const col = 'event_ts'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'metrics' })],
+      where: makeGroup('AND', [makeRule(`${alias}.${col}`, '$__timeFilter', null)]),
+    })
+    const sql = buildSql(state)  // not normalised — check the actual formatted output
+    expect(sql).toContain('$__timeFilter(')
+  })
+
+  it('$__interval Grafana variable is preserved when used as a time_bucket interval', () => {
+    const alias = 'm'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'metrics' })],
+      timescaleBucket: {
+        columnRef: { tableAlias: alias, columnName: 'ts' },
+        interval: '$__interval',
+        alias: 'time',
+        gapfill: false,
+      },
+    })
+    const sql = buildSql(state)
+    expect(sql).toContain('$__interval')
+  })
+
+  it('$variable dashboard variables are preserved unquoted in WHERE clause values', () => {
+    const alias = 'o'
+    const col = 'region'
+    const dashboardVar = '$region'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      where: makeGroup('AND', [makeRule(`${alias}.${col}`, '=', dashboardVar)]),
+    })
+    const sql = buildSql(state)
+    expect(sql).toContain(dashboardVar)
+    expect(sql).not.toContain(`'${dashboardVar}'`)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Window functions — extended
+// ---------------------------------------------------------------------------
+
+describe('Window functions — extended', () => {
+  it('emits window function with a frame clause', () => {
+    const alias = 's'
+    const frameClause = 'ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW'
+    const wf: WindowFunctionDef = {
+      id: crypto.randomUUID(),
+      fn: 'SUM',
+      expression: `${alias}.amount`,
+      partitionBy: [],
+      orderBy: [{ tableAlias: alias, columnName: 'created_at', direction: 'ASC' }],
+      frameClause,
+      alias: 'running_sum',
+    }
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'sales' })],
+      windowFunctions: [wf],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain(frameClause)
+  })
+
+  it('emits window function with no PARTITION BY when partitionBy is empty', () => {
+    const alias = 's'
+    const wf: WindowFunctionDef = {
+      id: crypto.randomUUID(),
+      fn: 'ROW_NUMBER',
+      partitionBy: [],
+      orderBy: [{ tableAlias: alias, columnName: 'id', direction: 'ASC' }],
+      alias: 'rn',
+    }
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'sales' })],
+      windowFunctions: [wf],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).not.toContain('PARTITION BY')
+    expect(sql).toContain('ROW_NUMBER()')
+  })
+
+  it('emits multiple window functions in a single SELECT', () => {
+    const alias = 's'
+    const wf1: WindowFunctionDef = {
+      id: crypto.randomUUID(),
+      fn: 'ROW_NUMBER',
+      partitionBy: [{ tableAlias: alias, columnName: 'category' }],
+      orderBy: [{ tableAlias: alias, columnName: 'id', direction: 'ASC' }],
+      alias: 'rn',
+    }
+    const wf2: WindowFunctionDef = {
+      id: crypto.randomUUID(),
+      fn: 'RANK',
+      partitionBy: [{ tableAlias: alias, columnName: 'category' }],
+      orderBy: [{ tableAlias: alias, columnName: 'score', direction: 'DESC' }],
+      alias: 'rnk',
+    }
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'sales' })],
+      windowFunctions: [wf1, wf2],
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('ROW_NUMBER()')
+    expect(sql).toContain('RANK()')
+    expect(sql).toContain('AS rn')
+    expect(sql).toContain('AS rnk')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// quoteValue edge cases
+// ---------------------------------------------------------------------------
+
+describe('quoteValue edge cases', () => {
+  it('emits Grafana $var dashboard variables unquoted', () => {
+    const alias = 'o'
+    const col = 'machine'
+    const grafanaVar = '$machine_name'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      where: makeGroup('AND', [makeRule(`${alias}.${col}`, '=', grafanaVar)]),
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain(grafanaVar)
+    expect(sql).not.toContain(`'${grafanaVar}'`)
+  })
+
+  it('emits NULL for an empty string value', () => {
+    const alias = 'o'
+    const col = 'notes'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      where: makeGroup('AND', [makeRule(`${alias}.${col}`, '=', '')]),
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('NULL')
+  })
+
+  it('emits NULL for an undefined value', () => {
+    const alias = 'o'
+    const col = 'notes'
+    const state = makeState({
+      tables: [makeTable({ alias, tableName: 'orders' })],
+      where: makeGroup('AND', [makeRule(`${alias}.${col}`, '=', undefined as unknown as null)]),
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('NULL')
+  })
+
+  it('emits a dotted column reference unquoted for correlated subquery conditions', () => {
+    const state = makeState({
+      tables: [makeTable({ alias: 'o', tableName: 'orders' })],
+      where: makeGroup('AND', [makeRule('o.customer_id', '=', 'c.id')]),
+    })
+    const sql = normalise(buildSql(state))
+    expect(sql).toContain('o.customer_id = c.id')
+    expect(sql).not.toContain("'c.id'")
+  })
+})
