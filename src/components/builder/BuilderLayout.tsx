@@ -7,6 +7,7 @@ import { RightPanel } from './right-panel/RightPanel'
 import { OnboardingOverlay, ONBOARDING_STORAGE_KEY } from './OnboardingOverlay'
 import { TemplateLibrary } from './TemplateLibrary'
 import { SavedQueriesDialog } from './SavedQueriesDialog'
+import { ImportSqlDialog } from './ImportSqlDialog'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -21,7 +22,7 @@ import { ToastProvider } from '@/components/ui/toast'
 import { useQueryStore } from '@/store/queryStore'
 import { useJsonStructureStore } from '@/store/jsonStructureStore'
 import { api } from '@/lib/api/client'
-import { Save, FolderOpen, RotateCcw, Database, Copy, HelpCircle, LayoutTemplate, ArrowLeft, Tag, X, FileDown, FileUp, ChevronsLeft, ChevronsRight } from 'lucide-react'
+import { Save, FolderOpen, RotateCcw, Database, Copy, HelpCircle, LayoutTemplate, ArrowLeft, Tag, X, FileDown, FileUp, ChevronsLeft, ChevronsRight, FileCode } from 'lucide-react'
 import { usePanelResize } from '@/hooks/usePanelResize'
 import { UnionPartSwitcher } from './UnionPartSwitcher'
 import type { QueryState } from '@/types/query'
@@ -86,6 +87,7 @@ function BuilderLayoutInner() {
   } = usePanelResize()
 
   const [templatesOpen, setTemplatesOpen] = useState(false)
+  const [importSqlOpen, setImportSqlOpen] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   useEffect(() => {
     if (!localStorage.getItem(ONBOARDING_STORAGE_KEY)) {
@@ -254,6 +256,10 @@ function BuilderLayoutInner() {
             Load from File
           </Button>
           <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleLoadFromFile} />
+          <Button variant="outline" size="sm" onClick={() => setImportSqlOpen(true)} title="Import a SELECT query from Grafana" className="border-white/20 bg-transparent text-white/75 hover:bg-white/10 hover:border-white/30 hover:text-white">
+            <FileCode className="mr-1 h-3.5 w-3.5" />
+            Import SQL
+          </Button>
           <Button variant="outline" size="sm" onClick={handleCopy} className="border-white/20 bg-transparent text-white/75 hover:bg-white/10 hover:border-white/30 hover:text-white">
             <Copy className="mr-1 h-3.5 w-3.5" />
             Copy SQL
@@ -397,6 +403,11 @@ function BuilderLayoutInner() {
       <TemplateLibrary
         open={templatesOpen}
         onClose={() => setTemplatesOpen(false)}
+      />
+
+      <ImportSqlDialog
+        open={importSqlOpen}
+        onClose={() => setImportSqlOpen(false)}
       />
 
       {/* Saved Queries Dialog */}
