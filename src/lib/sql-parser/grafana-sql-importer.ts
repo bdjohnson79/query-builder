@@ -4,8 +4,9 @@
 //
 // Reconstruction quality:
 //   Good:  simple JOINs, column refs, aggregates, WHERE/GROUP BY/ORDER BY/LIMIT
+//          non-recursive CTEs (fully visual), CTE virtual tables in main query
 //   Fair:  complex WHERE (preserved as raw rule), IN lists, BETWEEN
-//   Basic: CTEs (rawSql mode), window functions (raw expression)
+//          recursive CTEs (guided mode: anchor SQL + recursive step SQL)
 //   None:  subqueries in FROM (skipped + warned), UNION (only first branch)
 
 import { Parser } from 'node-sql-parser'
@@ -24,6 +25,7 @@ import type {
   ColumnRef,
   OrderByItem,
   CTEDef,
+  CteOutputColumn,
   GrafanaPanelType,
   ColumnMeta,
 } from '@/types/query'
@@ -196,7 +198,8 @@ function extractTables(
   fromClauses: AstNode[],
   appTables: AppTable[],
   appColumns: Record<number, AppColumn[]>,
-  schemas: AppSchema[]
+  schemas: AppSchema[],
+  cteMap: Map<string, CTEDef>
 ): TableExtractionResult {
   const instances: TableInstance[] = []
   const aliasMap = new Map<string, TableInstance>()
@@ -217,6 +220,34 @@ function extractTables(
     if (!tableName) continue
 
     const alias: string = entry.as ?? tableName
+
+    // First check: is this a CTE virtual table?
+    const cteDef = cteMap.get(tableName.toLowerCase())
+    if (cteDef) {
+      const instance: TableInstance = {
+        id: crypto.randomUUID(),
+        tableId: 0,
+        tableName: cteDef.name,
+        schemaName: '',
+        alias,
+        position: { x: xPos, y: 200 },
+        columns: cteDef.outputColumns.map((col, idx) => ({
+          id: idx,
+          name: col.name,
+          pgType: col.pgType,
+          isNullable: true,
+          isPrimaryKey: false,
+        })),
+        cteId: cteDef.id,
+      }
+      instances.push(instance)
+      aliasMap.set(alias, instance)
+      if (alias !== tableName) aliasMap.set(tableName, instance)
+      xPos += 280
+      continue
+    }
+
+    // Second check: real schema table
     const appTable = appTables.find(
       (t) => t.name.toLowerCase() === tableName.toLowerCase()
     )
@@ -672,30 +703,162 @@ function extractLimitOffset(limitNode: AstNode | null): { limit: number | null; 
 
 // ── CTE extraction ─────────────────────────────────────────────────────────
 
+/**
+ * Derive CTE output columns from a parsed QueryState — mirrors the logic in
+ * queryStore.promoteMainQueryToCte so the column metadata is consistent.
+ */
+function deriveOutputColumns(qs: QueryState): CteOutputColumn[] {
+  return qs.selectedColumns.map((sc) => {
+    const name = (sc.alias ?? sc.columnName) || 'col'
+    if (sc.expression || sc.aggregate) return { name, pgType: 'text' }
+    const table = qs.tables.find((t) => t.alias === sc.tableAlias)
+    const colMeta = table?.columns.find((c) => c.name === sc.columnName)
+    return { name, pgType: colMeta?.pgType ?? 'text' }
+  })
+}
+
+/**
+ * Core parsing pipeline: maps a SELECT AST node to a QueryState.
+ * Accepts a cteMap so CTE virtual tables can be resolved during extraction.
+ */
+function parseSelectAst(
+  ast: AstNode,
+  appTables: AppTable[],
+  appColumns: Record<number, AppColumn[]>,
+  schemas: AppSchema[],
+  cteMap: Map<string, CTEDef>,
+  warnings: string[],
+  isSubquery: boolean
+): QueryState {
+  const fromClauses: AstNode[] = ast.from ?? []
+  const { instances, aliasMap, warnings: tableWarnings } = extractTables(
+    fromClauses, appTables, appColumns, schemas, cteMap
+  )
+  warnings.push(...tableWarnings)
+
+  const joins = extractJoins(fromClauses, aliasMap, warnings)
+  const selectedColumns = extractSelectedColumns(ast.columns ?? [], aliasMap, warnings)
+  const where = ast.where ? extractFilterGroup(ast.where, warnings) : emptyFilterGroup()
+  const groupBy = extractGroupBy(ast.groupby, aliasMap)
+  const having = ast.having ? extractFilterGroup(ast.having, warnings) : emptyFilterGroup()
+  const orderBy = extractOrderBy(ast.orderby, aliasMap)
+  const { limit, offset } = extractLimitOffset(ast.limit)
+  const distinct = ast.distinct?.type === 'DISTINCT'
+
+  return {
+    ...emptyQueryState(),
+    tables: instances,
+    joins,
+    selectedColumns,
+    where,
+    groupBy,
+    having,
+    orderBy,
+    limit,
+    offset,
+    distinct,
+    isSubquery,
+  }
+}
+
+/**
+ * Extract CTEs from a WITH clause, reconstructing each one into visual
+ * QueryState mode. Processes them in declaration order so each CTE can
+ * reference earlier ones via the growing cteMap.
+ *
+ * - Non-recursive CTEs: fully parsed into nested QueryState (visual mode).
+ * - Recursive CTEs (UNION ALL): guided mode with anchorSql + recursiveStepSql.
+ */
 function extractCtes(
   withClauses: AstNode[] | null,
   parser: Parser,
+  appTables: AppTable[],
+  appColumns: Record<number, AppColumn[]>,
+  schemas: AppSchema[],
   warnings: string[]
-): CTEDef[] {
-  if (!withClauses) return []
-  return withClauses.map((clause) => {
+): { ctes: CTEDef[]; cteMap: Map<string, CTEDef> } {
+  if (!withClauses) return { ctes: [], cteMap: new Map() }
+
+  const ctes: CTEDef[] = []
+  const cteMap = new Map<string, CTEDef>()
+
+  for (const clause of withClauses) {
     const name: string = clause.name?.value ?? clause.name ?? 'cte'
-    let rawSql = ''
-    try {
-      rawSql = parser.sqlify(clause.stmt, { database: 'PostgreSQL' })
-    } catch {
-      rawSql = '-- CTE SQL could not be reconstructed'
+    const stmt: AstNode = clause.stmt
+    const isRecursive = stmt.set_op === 'union all' && stmt._next !== undefined
+
+    const cteId = crypto.randomUUID()
+
+    if (isRecursive) {
+      // Guided mode: split anchor and recursive step via the AST _next chain
+      let anchorSql = ''
+      let recursiveStepSql = ''
+      try {
+        // Sqlify the anchor by stripping _next and set_op from a shallow copy
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const anchorAst = { ...stmt, _next: undefined, set_op: undefined } as any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        anchorSql = parser.sqlify(anchorAst as any, { database: 'PostgreSQL' })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        recursiveStepSql = parser.sqlify(stmt._next as any, { database: 'PostgreSQL' })
+      } catch {
+        // Fallback: sqlify the whole CTE body as raw SQL
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          anchorSql = parser.sqlify(stmt as any, { database: 'PostgreSQL' })
+        } catch {
+          anchorSql = '-- anchor SQL could not be reconstructed'
+        }
+        recursiveStepSql = ''
+      }
+
+      // Derive output columns from the anchor SELECT list (without recursion)
+      const anchorQs = parseSelectAst(
+        { ...stmt, _next: undefined, set_op: undefined },
+        appTables, appColumns, schemas, cteMap, [], true
+      )
+      const outputColumns = deriveOutputColumns(anchorQs)
+
+      warnings.push(
+        `Recursive CTE "${name}" imported in guided mode (anchor + recursive step). ` +
+        `If Grafana macros were present, placeholder values may appear in the SQL.`
+      )
+
+      const cteDef: CTEDef = {
+        id: cteId,
+        name,
+        recursive: true,
+        recursiveMode: 'guided',
+        anchorSql,
+        recursiveStepSql,
+        queryState: emptyQueryState(),
+        outputColumns,
+      }
+      ctes.push(cteDef)
+      cteMap.set(name.toLowerCase(), cteDef)
+    } else {
+      // Visual mode: fully reconstruct the CTE's SELECT into a nested QueryState
+      const cteWarnings: string[] = []
+      const innerQs = parseSelectAst(
+        stmt, appTables, appColumns, schemas, cteMap, cteWarnings, true
+      )
+      warnings.push(...cteWarnings.map((w) => `CTE "${name}": ${w}`))
+
+      const outputColumns = deriveOutputColumns(innerQs)
+
+      const cteDef: CTEDef = {
+        id: cteId,
+        name,
+        recursive: false,
+        queryState: innerQs,
+        outputColumns,
+      }
+      ctes.push(cteDef)
+      cteMap.set(name.toLowerCase(), cteDef)
     }
-    warnings.push(`CTE "${name}" imported as raw SQL — visual sub-canvas is not available for imported CTEs.`)
-    return {
-      id: crypto.randomUUID(),
-      name,
-      recursive: false,
-      queryState: emptyQueryState(),
-      rawSql,
-      outputColumns: [],
-    } satisfies CTEDef
-  })
+  }
+
+  return { ctes, cteMap }
 }
 
 // ── Grafana intent detection ───────────────────────────────────────────────
@@ -773,52 +936,16 @@ export function parseSqlToQueryState(
     return { queryState: emptyQueryState(), warnings }
   }
 
-  // CTEs
-  const ctes = extractCtes(ast.with, parser, warnings)
-
-  // Tables & aliases
-  const fromClauses: AstNode[] = ast.from ?? []
-  const { instances, aliasMap, warnings: tableWarnings } = extractTables(
-    fromClauses, appTables, appColumns, schemas
+  // CTEs — parsed in declaration order so each can reference previous ones
+  const { ctes, cteMap } = extractCtes(
+    ast.with, parser, appTables, appColumns, schemas, warnings
   )
-  warnings.push(...tableWarnings)
 
-  // Joins
-  const joins = extractJoins(fromClauses, aliasMap, warnings)
-
-  // SELECT columns
-  const selectedColumns = extractSelectedColumns(ast.columns ?? [], aliasMap, warnings)
-
-  // WHERE
-  const where = ast.where ? extractFilterGroup(ast.where, warnings) : emptyFilterGroup()
-
-  // GROUP BY
-  const groupBy = extractGroupBy(ast.groupby, aliasMap)
-
-  // HAVING
-  const having = ast.having ? extractFilterGroup(ast.having, warnings) : emptyFilterGroup()
-
-  // ORDER BY
-  const orderBy = extractOrderBy(ast.orderby, aliasMap)
-
-  // LIMIT / OFFSET
-  const { limit, offset } = extractLimitOffset(ast.limit)
-
-  // DISTINCT
-  const distinct = ast.distinct?.type === 'DISTINCT'
+  // Main query — uses cteMap so CTE virtual tables are resolved
+  const mainQs = parseSelectAst(ast, appTables, appColumns, schemas, cteMap, warnings, false)
 
   const queryState: QueryState = {
-    ...emptyQueryState(),
-    tables: instances,
-    joins,
-    selectedColumns,
-    where,
-    groupBy,
-    having,
-    orderBy,
-    limit,
-    offset,
-    distinct,
+    ...mainQs,
     ctes,
   }
 
@@ -830,7 +957,7 @@ export function parseSqlToQueryState(
     queryState.grafanaPanelType = panelType
   }
 
-  if (instances.length === 0 && ctes.length === 0) {
+  if (queryState.tables.length === 0 && ctes.length === 0) {
     warnings.push('No tables could be resolved from the schema. Check that the referenced tables exist in Schema Admin.')
   }
 
