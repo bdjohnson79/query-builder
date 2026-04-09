@@ -16,6 +16,7 @@ import {
   type FilterRule,
   type WindowFunctionDef,
   type CTEDef,
+  type CteOutputColumn,
   type JsonbMapping,
   type GrafanaPanelType,
   type TimescaleBucket,
@@ -82,6 +83,7 @@ interface QueryStore {
   addCte: (cte: CTEDef) => void
   updateCte: (id: string, updates: Partial<CTEDef>) => void
   removeCte: (id: string) => void
+  promoteMainQueryToCte: (name: string) => void
 
   // JSONB mappings (structure assignments)
   setJsonbMapping: (tableAlias: string, columnName: string, structureId: number) => void
@@ -681,6 +683,71 @@ export const useQueryStore = create<QueryStore>()(
       set((s) => {
         const next = { ...s.queryState, ctes: s.queryState.ctes.filter((c) => c.id !== id) }
         return { queryState: next, generatedSql: rebuildSql(next), activeCteId: s.activeCteId === id ? null : s.activeCteId }
+      }),
+
+    promoteMainQueryToCte: (name) =>
+      set((s) => {
+        // Guard: must have at least one table, must not currently be editing a CTE
+        if (s.queryState.tables.length === 0 || s.activeCteId !== null) return s
+
+        const mainQs = s.queryState
+
+        // Derive outputColumns from selectedColumns — look up pgType from table metadata.
+        // Expressions and aggregates have no reliable output type: default to 'text'.
+        const outputColumns: CteOutputColumn[] = mainQs.selectedColumns.map((sc) => {
+          const colName = sc.alias ?? sc.columnName
+          if (sc.expression || sc.aggregate) return { name: colName, pgType: 'text' }
+          const table = mainQs.tables.find((t) => t.alias === sc.tableAlias)
+          const colMeta = table?.columns.find((c) => c.name === sc.columnName)
+          return { name: colName, pgType: colMeta?.pgType ?? 'text' }
+        })
+
+        const cteId = crypto.randomUUID()
+        const newCte: CTEDef = {
+          id: cteId,
+          name,
+          recursive: false,
+          queryState: {
+            ...mainQs,
+            ctes: [],        // existing root CTEs stay at root — not nested inside the new CTE
+            isSubquery: true,
+          },
+          outputColumns,
+        }
+
+        // Auto-place the CTE virtual table on the fresh main canvas
+        const virtualTable: TableInstance = {
+          id: crypto.randomUUID(),
+          tableId: 0,
+          tableName: name,
+          schemaName: '',
+          alias: name,
+          cteId,
+          position: { x: 100, y: 100 },
+          columns: outputColumns.map((col, idx) => ({
+            id: idx,
+            name: col.name,
+            pgType: col.pgType,
+            isNullable: true,
+            isPrimaryKey: false,
+          })),
+        }
+
+        // Preserve any existing root-level CTEs; append the new one
+        const freshMain: QueryState = {
+          ...emptyQueryState(),
+          ctes: [...mainQs.ctes, newCte],
+          tables: [virtualTable],
+        }
+
+        return {
+          queryState: freshMain,
+          generatedSql: rebuildSql(freshMain),
+          userEditedSql: null,
+          activeCteId: null,
+          activeQueryPart: 'main' as const,
+          activeLateralJoinId: null,
+        }
       }),
 
     setJsonbMapping: (tableAlias, columnName, structureId) =>

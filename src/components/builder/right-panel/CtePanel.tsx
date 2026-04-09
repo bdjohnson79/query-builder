@@ -4,7 +4,7 @@ import { useQueryStore } from '@/store/queryStore'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { X, Plus, Pencil, Code2, Eye, GitMerge } from 'lucide-react'
+import { X, Plus, Pencil, Code2, Eye, GitMerge, ArrowUpFromLine } from 'lucide-react'
 import { emptyQueryState } from '@/types/query'
 import type { CTEDef, CteOutputColumn } from '@/types/query'
 
@@ -303,8 +303,15 @@ function CteListItem({ cte }: { cte: CTEDef }) {
 export function CtePanel() {
   const ctes = useQueryStore((s) => s.queryState.ctes)
   const activeCteId = useQueryStore((s) => s.activeCteId)
+  const tables = useQueryStore((s) => s.queryState.tables)
   const addCte = useQueryStore((s) => s.addCte)
   const startEditingCte = useQueryStore((s) => s.startEditingCte)
+  const promoteMainQueryToCte = useQueryStore((s) => s.promoteMainQueryToCte)
+
+  const [showPromoteForm, setShowPromoteForm] = useState(false)
+  const [promoteName, setPromoteName] = useState('')
+
+  const canPromote = tables.length > 0 && activeCteId === null
 
   const activeCte = activeCteId ? ctes.find((c) => c.id === activeCteId) : null
 
@@ -318,6 +325,28 @@ export function CtePanel() {
     }
     addCte(cte)
     startEditingCte(cte.id)
+  }
+
+  const openPromoteForm = () => {
+    const taken = new Set(ctes.map((c) => c.name))
+    let candidate = 'base_query'
+    let n = 2
+    while (taken.has(candidate)) candidate = `base_query_${n++}`
+    setPromoteName(candidate)
+    setShowPromoteForm(true)
+  }
+
+  const submitPromote = () => {
+    const trimmed = promoteName.trim()
+    if (!trimmed) return
+    promoteMainQueryToCte(trimmed)
+    setShowPromoteForm(false)
+    setPromoteName('')
+  }
+
+  const cancelPromote = () => {
+    setShowPromoteForm(false)
+    setPromoteName('')
   }
 
   // Edit mode
@@ -342,11 +371,62 @@ export function CtePanel() {
         <CteListItem key={cte.id} cte={cte} />
       ))}
 
+      {showPromoteForm ? (
+        <div className="rounded-md border border-dashed p-2 space-y-2">
+          <Label className="text-xs font-medium">Promote main query to CTE</Label>
+          <p className="text-[10px] text-muted-foreground">
+            The current canvas query becomes a named CTE. The CTE table is placed on
+            the canvas so you can build on top of it immediately.
+          </p>
+          <div className="flex items-center gap-1">
+            <Input
+              className="h-7 text-xs flex-1"
+              placeholder="cte name"
+              value={promoteName}
+              onChange={(e) => setPromoteName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submitPromote()
+                if (e.key === 'Escape') cancelPromote()
+              }}
+              autoFocus
+            />
+            <Button
+              size="sm"
+              className="h-7 text-xs"
+              onClick={submitPromote}
+              disabled={!promoteName.trim()}
+            >
+              Promote
+            </Button>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={cancelPromote}>
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full"
+          onClick={openPromoteForm}
+          disabled={!canPromote}
+          title={
+            tables.length === 0
+              ? 'Add a table to the canvas first'
+              : activeCteId !== null
+              ? 'Stop editing a CTE first'
+              : 'Extract the current query into a named CTE'
+          }
+        >
+          <ArrowUpFromLine className="mr-1 h-3.5 w-3.5" />
+          Promote to CTE
+        </Button>
+      )}
+
       <Button variant="outline" size="sm" className="w-full" onClick={addNew}>
         <Plus className="mr-1 h-3.5 w-3.5" />
         Add CTE
       </Button>
-
     </div>
   )
 }
