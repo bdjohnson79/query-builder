@@ -52,57 +52,149 @@ export interface ImportResult {
 }
 
 // ── Macro preprocessing ────────────────────────────────────────────────────
+//
+// Uses a character-by-character scanner with paren-depth tracking instead of
+// regex. Regex approaches fail when macro arguments contain nested parentheses
+// (e.g. $__timeGroup(date_trunc('hour', time), '$__interval') or
+//  $__timeFilter(coalesce(t.time, now()))). The regex [^)]+ stops at the first
+// closing paren inside the argument, leaving orphaned fragments that crash the
+// parser.
+
+/** Extract the argument string inside balanced outer parentheses starting at openPos. */
+function extractBalancedContent(sql: string, openPos: number): string {
+  let depth = 1
+  let i = openPos + 1
+  while (i < sql.length && depth > 0) {
+    if (sql[i] === '(') depth++
+    else if (sql[i] === ')') depth--
+    if (depth > 0) i++
+  }
+  return sql.slice(openPos + 1, i)
+}
+
+/** Extract the first comma-delimited argument from an argument string, respecting nested parens. */
+function firstArg(args: string): string {
+  let depth = 0
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '(') depth++
+    else if (args[i] === ')') depth--
+    else if (args[i] === ',' && depth === 0) return args.slice(0, i).trim()
+  }
+  return args.trim()
+}
+
+/** Build the masked replacement for a single $__name(args) or standalone $__name. */
+function macroReplacement(name: string, args: string | null): string {
+  switch (name) {
+    case 'timefilter':
+      return args ? `${firstArg(args)} > '${SENTINEL_TIMEFILTER}'` : 'TRUE'
+    case 'unixepochfilter':
+      return args ? `${firstArg(args)} > '${SENTINEL_EPOCHFILTER}'` : 'TRUE'
+    case 'unixepochnanofilter':
+      return args ? `${firstArg(args)} > '${SENTINEL_EPOCHNANOFILTER}'` : 'TRUE'
+    case 'timegroup':
+    case 'timegroupalias':
+      // Keep only the first arg (the column) — drop interval and fill args
+      return args ? firstArg(args) : 'time'
+    case 'timefrom':
+    case 'timeto':
+      return "'2000-01-01'"
+    case 'interval':
+      return "'1 hour'"
+    case 'schema':
+    case 'table':
+    case 'column':
+      // These appear as identifiers in FROM/SELECT — produce a safe bare word
+      return 'grafana_placeholder'
+    default:
+      // Unknown macro: use TRUE for standalone (boolean context), '1' if it had args
+      return args !== null ? "'1'" : 'TRUE'
+  }
+}
 
 /**
- * Replace Grafana macros with syntactically valid SQL so node-sql-parser
- * can parse the query. Returns the masked SQL.
+ * Replace all Grafana macros and dashboard variables with syntactically valid
+ * SQL placeholders so node-sql-parser can parse the query.
+ *
+ * Also handles the legacy [[variable]] Grafana template syntax.
  */
 export function preprocessGrafanaMacros(sql: string): { masked: string; hasMacros: boolean } {
-  let result = sql
+  let result = ''
   let hasMacros = false
+  let i = 0
 
-  // $__timeFilter(col) → col > 'SENTINEL'  (preserves column in WHERE AST)
-  result = result.replace(/\$__timeFilter\(([^)]+)\)/g, (_, col) => {
-    hasMacros = true
-    return `${col} > '${SENTINEL_TIMEFILTER}'`
-  })
+  while (i < sql.length) {
+    // ── $__ macros ────────────────────────────────────────────────────────
+    if (sql[i] === '$' && sql[i + 1] === '_' && sql[i + 2] === '_') {
+      hasMacros = true
+      // Collect the macro name (chars after $__)
+      let j = i + 3
+      while (j < sql.length && /\w/.test(sql[j])) j++
+      const name = sql.slice(i + 3, j).toLowerCase()
 
-  // $__unixEpochFilter(col) → col > 'SENTINEL'
-  result = result.replace(/\$__unixEpochFilter\(([^)]+)\)/g, (_, col) => {
-    hasMacros = true
-    return `${col} > '${SENTINEL_EPOCHFILTER}'`
-  })
+      // Skip optional whitespace before (
+      let k = j
+      while (k < sql.length && sql[k] === ' ') k++
 
-  // $__unixEpochNanoFilter(col) → col > 'SENTINEL'
-  result = result.replace(/\$__unixEpochNanoFilter\(([^)]+)\)/g, (_, col) => {
-    hasMacros = true
-    return `${col} > '${SENTINEL_EPOCHNANOFILTER}'`
-  })
+      if (k < sql.length && sql[k] === '(') {
+        const args = extractBalancedContent(sql, k)
+        result += macroReplacement(name, args)
+        i = k + args.length + 2  // skip past the closing )
+      } else {
+        result += macroReplacement(name, null)
+        i = j
+      }
+      continue
+    }
 
-  // $__timeGroupAlias(col, ...) and $__timeGroup(col, ...) → just the column
-  result = result.replace(/\$__timeGroup(?:Alias)?\s*\(([^,)]+),\s*[^)]+\)/g, (_, col) => {
-    hasMacros = true
-    return col.trim()
-  })
+    // ── ${varName} template variables ────────────────────────────────────
+    if (sql[i] === '$' && sql[i + 1] === '{') {
+      hasMacros = true
+      let j = i + 2
+      while (j < sql.length && sql[j] !== '}') j++
+      result += '1'
+      i = j + 1  // skip past }
+      continue
+    }
 
-  // $__timeFrom() / $__timeTo() → string literals
-  result = result.replace(/\$__timeFrom\(\)/g, () => { hasMacros = true; return "'2000-01-01'" })
-  result = result.replace(/\$__timeTo\(\)/g, () => { hasMacros = true; return "'2030-01-01'" })
+    // ── $varName plain variables (letter/underscore start) ───────────────
+    if (sql[i] === '$' && i + 1 < sql.length && /[a-zA-Z_]/.test(sql[i + 1])) {
+      hasMacros = true
+      let j = i + 1
+      while (j < sql.length && /\w/.test(sql[j])) j++
+      result += '1'
+      i = j
+      continue
+    }
 
-  // $__interval → string literal
-  result = result.replace(/\$__interval/g, () => { hasMacros = true; return "'1 hour'" })
+    // ── [[varName]] legacy Grafana template syntax ───────────────────────
+    if (sql[i] === '[' && sql[i + 1] === '[') {
+      const end = sql.indexOf(']]', i + 2)
+      if (end !== -1) {
+        hasMacros = true
+        result += '1'
+        i = end + 2
+        continue
+      }
+    }
 
-  // Any remaining $__xxx(...) or $__xxx macros → '1' (safe numeric-ish value)
-  result = result.replace(/\$__\w+\s*\([^)]*\)/g, () => { hasMacros = true; return "'1'" })
-  result = result.replace(/\$__\w+/g, () => { hasMacros = true; return "'1'" })
-
-  // Grafana dashboard variables: ${varName} → 1  (numeric, safe in most positions)
-  result = result.replace(/\$\{[^}]+\}/g, () => { hasMacros = true; return '1' })
-
-  // Plain $varName (letter-start) → 1
-  result = result.replace(/\$[a-zA-Z_][a-zA-Z0-9_]*/g, () => { hasMacros = true; return '1' })
+    result += sql[i]
+    i++
+  }
 
   return { masked: result, hasMacros }
+}
+
+/**
+ * After parser.sqlify() reconstructs CTE SQL from the masked AST, restore
+ * sentinel placeholders back to the original Grafana macro form.
+ * Pattern: `col > '__SENT_xxx__'` → `$__macroName(col)`
+ */
+export function restoreSentinelsInSql(sql: string): string {
+  return sql
+    .replace(/(\S+)\s*>\s*'__SENT_GFTIMEFILTER__'/g, '$__timeFilter($1)')
+    .replace(/(\S+)\s*>\s*'__SENT_GFEPOCHFILTER__'/g, '$__unixEpochFilter($1)')
+    .replace(/(\S+)\s*>\s*'__SENT_GFEPOCHNANOFILTER__'/g, '$__unixEpochNanoFilter($1)')
 }
 
 // ── Internal AST helpers ───────────────────────────────────────────────────
@@ -798,14 +890,14 @@ function extractCtes(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const anchorAst = { ...stmt, _next: undefined, set_op: undefined } as any
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        anchorSql = parser.sqlify(anchorAst as any, { database: 'PostgreSQL' })
+        anchorSql = restoreSentinelsInSql(parser.sqlify(anchorAst as any, { database: 'PostgreSQL' }))
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        recursiveStepSql = parser.sqlify(stmt._next as any, { database: 'PostgreSQL' })
+        recursiveStepSql = restoreSentinelsInSql(parser.sqlify(stmt._next as any, { database: 'PostgreSQL' }))
       } catch {
         // Fallback: sqlify the whole CTE body as raw SQL
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          anchorSql = parser.sqlify(stmt as any, { database: 'PostgreSQL' })
+          anchorSql = restoreSentinelsInSql(parser.sqlify(stmt as any, { database: 'PostgreSQL' }))
         } catch {
           anchorSql = '-- anchor SQL could not be reconstructed'
         }
@@ -819,10 +911,7 @@ function extractCtes(
       )
       const outputColumns = deriveOutputColumns(anchorQs)
 
-      warnings.push(
-        `Recursive CTE "${name}" imported in guided mode (anchor + recursive step). ` +
-        `If Grafana macros were present, placeholder values may appear in the SQL.`
-      )
+      warnings.push(`Recursive CTE "${name}" imported in guided mode (anchor + recursive step).`)
 
       const cteDef: CTEDef = {
         id: cteId,
