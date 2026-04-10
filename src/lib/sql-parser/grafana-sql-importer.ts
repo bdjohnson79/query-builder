@@ -29,6 +29,8 @@ import type {
   CteOutputColumn,
   GrafanaPanelType,
   ColumnMeta,
+  UnionBranch,
+  UnionOperator,
 } from '@/types/query'
 import type { AppTable, AppColumn, AppSchema } from '@/types/schema'
 
@@ -1516,6 +1518,13 @@ function detectGrafanaIntent(qs: QueryState): {
 
 // ── Core SELECT AST → QueryState pipeline ─────────────────────────────────
 
+/** Walk to the tail of a unionQuery chain and append a new branch. */
+function appendUnionBranch(qs: QueryState, operator: UnionOperator, branch: QueryState): void {
+  let current = qs
+  while (current.unionQuery) current = current.unionQuery.queryState
+  current.unionQuery = { operator, queryState: branch } as UnionBranch
+}
+
 function parseSelectAst(
   selectStmt: PgNode,
   appTables: AppTable[],
@@ -1525,6 +1534,43 @@ function parseSelectAst(
   warnings: string[],
   isSubquery: boolean
 ): QueryState {
+  // ── Set operations (UNION / INTERSECT / EXCEPT) ──────────────────────────
+  // For set ops, pgsql-parser puts the per-SELECT data in larg/rarg, not on
+  // the outer node. ORDER BY / LIMIT / OFFSET are on the outer node.
+  if (selectStmt.op && selectStmt.op !== 'SETOP_NONE') {
+    const largStmt = nk('SelectStmt', selectStmt.larg ?? {})
+    const rargStmt = nk('SelectStmt', selectStmt.rarg ?? {})
+
+    // Recurse into both branches (handles 3+ chained UNIONs naturally)
+    const largQs = largStmt
+      ? parseSelectAst(largStmt, appTables, appColumns, schemas, cteMap, warnings, isSubquery)
+      : { ...emptyQueryState(), isSubquery }
+    const rargQs = rargStmt
+      ? parseSelectAst(rargStmt, appTables, appColumns, schemas, cteMap, warnings, isSubquery)
+      : { ...emptyQueryState(), isSubquery }
+
+    // Map set operation type
+    const isAll = Boolean(selectStmt.all)
+    const op = String(selectStmt.op)
+    let operator: UnionOperator = isAll ? 'UNION ALL' : 'UNION'
+    if (op === 'SETOP_INTERSECT') operator = isAll ? 'INTERSECT ALL' : 'INTERSECT'
+    if (op === 'SETOP_EXCEPT')    operator = isAll ? 'EXCEPT ALL'    : 'EXCEPT'
+
+    // Append rarg to the tail of larg's union chain
+    appendUnionBranch(largQs, operator, rargQs)
+
+    // Apply ORDER BY / LIMIT / OFFSET from the outer (UNION) node
+    const { limit, offset } = extractLimitOffset(selectStmt.limitCount, selectStmt.limitOffset)
+    if (limit  !== null) largQs.limit  = limit
+    if (offset !== null) largQs.offset = offset
+    const outerAliasMap = new Map(largQs.tables.map((t) => [t.alias, t]))
+    const outerOrderBy = extractOrderBy(selectStmt.sortClause, outerAliasMap)
+    if (outerOrderBy.length > 0) largQs.orderBy = outerOrderBy
+
+    return largQs
+  }
+
+  // ── Normal single SELECT ─────────────────────────────────────────────────
   const fromClause: PgNode[] = selectStmt.fromClause ?? []
 
   const { instances, aliasMap, warnings: tableWarnings } = extractTables(
@@ -1687,8 +1733,9 @@ export async function parseSqlToQueryState(
   let rawAst: PgNode
   try {
     rawAst = await parse(masked)
-  } catch (_err) {
-    warnings.push('Full query parse failed — attempting per-CTE fallback.')
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    warnings.push(`Full query parse failed (${msg}) — attempting per-CTE fallback.`)
     return parseSqlWithPerCteStrategy(originalSql, appTables, appColumns, schemas, warnings)
   }
 

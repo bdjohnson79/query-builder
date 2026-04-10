@@ -6,7 +6,7 @@ export type { JsonbMapping }
 /** REFERENCE is a visual-only dependency arrow — it renders on the canvas but emits no SQL. */
 export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL OUTER' | 'CROSS' | 'LATERAL' | 'REFERENCE'
 
-export type UnionOperator = 'UNION ALL' | 'UNION'
+export type UnionOperator = 'UNION ALL' | 'UNION' | 'INTERSECT' | 'INTERSECT ALL' | 'EXCEPT' | 'EXCEPT ALL'
 
 export interface UnionBranch {
   operator: UnionOperator
