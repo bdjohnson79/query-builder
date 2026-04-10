@@ -480,9 +480,14 @@ function extractTables(
   const allItems = (fromClause ?? []).flatMap(flattenFromItem)
 
   for (const item of allItems) {
-    // Subquery in FROM — skip
+    // Inline subquery in FROM — skip.
+    // Note: LATERAL subselects (part of a JOIN) are handled in extractJoins; the only
+    // RangeSubselect nodes that reach here are plain subqueries in FROM, not LATERAL ones.
     if (nk('RangeSubselect', item) !== null) {
-      warnings.push('Subquery in FROM clause was skipped — subqueries cannot be rendered as canvas nodes.')
+      const rs = nk('RangeSubselect', item)
+      if (!rs?.lateral) {
+        warnings.push('Subquery in FROM clause was skipped — subqueries cannot be rendered as canvas nodes.')
+      }
       continue
     }
 
@@ -620,7 +625,11 @@ function extractSimpleOnCondition(qualsNode: PgNode, aliasMap: Map<string, Table
 function extractJoins(
   fromClause: PgNode[],
   aliasMap: Map<string, TableInstance>,
-  warnings: string[]
+  warnings: string[],
+  appTables: AppTable[],
+  appColumns: Record<number, AppColumn[]>,
+  schemas: AppSchema[],
+  cteMap: Map<string, CTEDef>
 ): JoinDef[] {
   const joins: JoinDef[] = []
 
@@ -630,9 +639,50 @@ function extractJoins(
     const je = nk('JoinExpr', joinItem)
     if (!je) continue
 
+    // ── LATERAL join ────────────────────────────────────────────────────────
+    const rs = nk('RangeSubselect', je.rarg ?? {})
+    if (rs?.lateral) {
+      const lateralAlias: string = rs.alias?.aliasname ?? 'lateral_sub'
+      const innerSelectStmt = nk('SelectStmt', rs.subquery ?? {})
+
+      if (innerSelectStmt) {
+        const lateralWarnings: string[] = []
+        const lateralQs = parseSelectAst(
+          innerSelectStmt, appTables, appColumns, schemas, cteMap, lateralWarnings, true
+        )
+        warnings.push(...lateralWarnings)
+
+        // The left table is the direct larg of this JoinExpr (may be a RangeVar or a JoinExpr chain)
+        const lRv = nk('RangeVar', je.larg ?? {})
+        const leftAlias = lRv?.alias?.aliasname ?? lRv?.relname ?? (() => {
+          // Fallback: last alias added to aliasMap
+          let last = ''
+          for (const alias of aliasMap.keys()) last = alias
+          return last
+        })()
+
+        // ON condition — LATERAL is usually ON true
+        const onExpression = je.quals ? stringifyNode(je.quals) : 'TRUE'
+
+        const join: JoinDef = {
+          id: crypto.randomUUID(),
+          type: 'LATERAL',
+          leftTableAlias: leftAlias,
+          leftColumn: '',
+          rightTableAlias: lateralAlias,
+          rightColumn: '',
+          lateralAlias,
+          lateralSubquery: lateralQs,
+          onExpression,
+        }
+        joins.push(join)
+      }
+      continue
+    }
+
+    // ── Regular (non-lateral) join ───────────────────────────────────────────
     const joinType: JoinType = PG_JOIN_TYPE_MAP[je.jointype ?? 'JOIN_INNER'] ?? 'INNER'
 
-    // Determine the right table alias from rarg
     const rv = nk('RangeVar', je.rarg ?? {})
     if (!rv) continue
     const rightTableName: string = rv.relname ?? ''
@@ -648,7 +698,6 @@ function extractJoins(
     if (je.quals) {
       const simple = extractSimpleOnCondition(je.quals, aliasMap)
       if (simple) {
-        // Determine which side is left vs right in our model
         if (simple.rightTableAlias === rightAlias || simple.rightTableAlias === rightTableName) {
           leftAlias = simple.leftTableAlias
           leftColumn = simple.leftColumn
@@ -659,13 +708,11 @@ function extractJoins(
           rightColumn = simple.leftColumn
         }
       } else {
-        // Complex ON condition — store as raw expression
         onExpression = stringifyNode(je.quals)
         warnings.push(`JOIN "${rightTableName}" has a complex ON condition — stored as raw expression.`)
       }
     }
 
-    // Fallback: pick the first table that isn't the right table
     if (!leftAlias) {
       for (const [alias, inst] of aliasMap) {
         if (inst.id !== rightInstance.id && alias === inst.alias) {
@@ -1543,7 +1590,7 @@ function parseSelectAst(
     const largStmt = selectStmt.larg && Object.keys(selectStmt.larg).length > 0 ? selectStmt.larg : null
     const rargStmt = selectStmt.rarg && Object.keys(selectStmt.rarg).length > 0 ? selectStmt.rarg : null
 
-    // Recurse into both branches (handles 3+ chained UNIONs naturally)
+    // Parse both branches
     const largQs = largStmt
       ? parseSelectAst(largStmt, appTables, appColumns, schemas, cteMap, warnings, isSubquery)
       : { ...emptyQueryState(), isSubquery }
@@ -1580,7 +1627,30 @@ function parseSelectAst(
   )
   warnings.push(...tableWarnings)
 
-  const joins = extractJoins(fromClause, aliasMap, warnings)
+  const joins = extractJoins(fromClause, aliasMap, warnings, appTables, appColumns, schemas, cteMap)
+
+  // Add lateral join aliases to aliasMap so WHERE/SELECT can reference them (e.g. e2.value).
+  // Lateral aliases are not canvas nodes (not in instances), but they are in scope for the query.
+  for (const j of joins) {
+    if (j.type === 'LATERAL' && j.lateralAlias && !aliasMap.has(j.lateralAlias)) {
+      aliasMap.set(j.lateralAlias, {
+        id: crypto.randomUUID(),
+        tableId: 0,
+        tableName: j.lateralAlias,
+        schemaName: '',
+        alias: j.lateralAlias,
+        position: { x: 0, y: 0 },
+        columns: j.lateralSubquery?.selectedColumns.map((sc, i) => ({
+          id: i,
+          name: sc.alias ?? sc.columnName,
+          pgType: 'text',
+          isNullable: true,
+          isPrimaryKey: false,
+        })) ?? [],
+      })
+    }
+  }
+
   const selectedColumns = extractSelectedColumns(selectStmt.targetList ?? [], aliasMap, warnings)
   const where = extractFilterGroup(selectStmt.whereClause, warnings)
   const groupBy = extractGroupBy(selectStmt.groupClause, aliasMap)

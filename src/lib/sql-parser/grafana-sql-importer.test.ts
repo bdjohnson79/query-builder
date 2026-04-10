@@ -470,19 +470,27 @@ ORDER BY 1,2`
     expect(join.rightColumn).toBe('name')
   })
 
-  it('chains the UNION ALL second branch with tags virtual table', async () => {
+  it('chains the UNION ALL second branch with lateral join fully parsed', async () => {
     const result = await parseSqlToQueryState(STANDARD_TIME_SERIES_SQL, ALL_TABLES, COLUMNS, SCHEMAS)
 
     expect(result.queryState.unionQuery).toBeDefined()
     expect(result.queryState.unionQuery!.operator).toBe('UNION ALL')
 
     const part2 = result.queryState.unionQuery!.queryState
-    const part2Names = tableNames(part2)
-    expect(part2Names).toContain('tags')  // tags t2 in UNION Part 2
-
+    // Part 2 should have the tags CTE virtual table (t2)
+    expect(tableNames(part2)).toContain('tags')
     const tagsVirtual2 = part2.tables.find((t) => t.tableName === 'tags')!
     expect(tagsVirtual2.alias).toBe('t2')
-    expect(tagsVirtual2.cteId).toBe(result.queryState.ctes[0].id)
+
+    // Part 2 should have the LATERAL join fully parsed (not skipped)
+    const lateralJoin = part2.joins.find((j) => j.type === 'LATERAL')
+    expect(lateralJoin).toBeDefined()
+    expect(lateralJoin!.lateralAlias).toBe('e2')
+    // The lateral subquery should reference the event table
+    expect(lateralJoin!.lateralSubquery).toBeDefined()
+    expect(lateralJoin!.lateralSubquery!.tables.some((t) => t.tableName === 'event')).toBe(true)
+    // Not stored as rawSql — fully visual
+    expect(result.queryState.unionQuery!.rawSql).toBeUndefined()
   })
 
   it('does not report any "unsupported syntax" or "per-CTE fallback" warnings', async () => {
