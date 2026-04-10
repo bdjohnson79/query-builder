@@ -39,6 +39,10 @@ import type { AppTable, AppColumn, AppSchema } from '@/types/schema'
 const SENTINEL_TIMEFILTER = '__SENT_GFTIMEFILTER__'
 const SENTINEL_EPOCHFILTER = '__SENT_GFEPOCHFILTER__'
 const SENTINEL_EPOCHNANOFILTER = '__SENT_GFEPOCHNANOFILTER__'
+const SENTINEL_TIMEFROM = '__SENT_GFTIMEFROM__'
+const SENTINEL_TIMETO = '__SENT_GFTIMETO__'
+/** Prefix for dashboard variable sentinels: __SENT_DASHVAR_<name>__ */
+const SENTINEL_DASHVAR_PREFIX = '__SENT_DASHVAR_'
 
 const SENTINEL_TO_OPERATOR: Record<string, string> = {
   [SENTINEL_TIMEFILTER]: '$__timeFilter',
@@ -102,8 +106,9 @@ function macroReplacement(name: string, args: string | null): string {
       // Keep only the first arg (the column) — drop interval and fill args
       return args ? firstArg(args) : 'time'
     case 'timefrom':
+      return `'${SENTINEL_TIMEFROM}'`
     case 'timeto':
-      return "'2000-01-01'"
+      return `'${SENTINEL_TIMETO}'`
     case 'interval':
       return "'1 hour'"
     case 'schema':
@@ -157,7 +162,8 @@ export function preprocessGrafanaMacros(sql: string): { masked: string; hasMacro
       hasMacros = true
       let j = i + 2
       while (j < sql.length && sql[j] !== '}') j++
-      result += '1'
+      const varName = sql.slice(i + 2, j)
+      result += `'${SENTINEL_DASHVAR_PREFIX}${varName}__'`
       i = j + 1  // skip past }
       continue
     }
@@ -167,7 +173,8 @@ export function preprocessGrafanaMacros(sql: string): { masked: string; hasMacro
       hasMacros = true
       let j = i + 1
       while (j < sql.length && /\w/.test(sql[j])) j++
-      result += '1'
+      const varName = sql.slice(i + 1, j)
+      result += `'${SENTINEL_DASHVAR_PREFIX}${varName}__'`
       i = j
       continue
     }
@@ -177,7 +184,8 @@ export function preprocessGrafanaMacros(sql: string): { masked: string; hasMacro
       const end = sql.indexOf(']]', i + 2)
       if (end !== -1) {
         hasMacros = true
-        result += '1'
+        const varName = sql.slice(i + 2, end)
+        result += `'${SENTINEL_DASHVAR_PREFIX}${varName}__'`
         i = end + 2
         continue
       }
@@ -191,15 +199,37 @@ export function preprocessGrafanaMacros(sql: string): { masked: string; hasMacro
 }
 
 /**
- * After CTE SQL is reconstructed, restore sentinel placeholders back to the
- * original Grafana macro form.
- * Pattern: `col > '__SENT_xxx__'` → `$__macroName(col)`
+ * After SQL expressions are reconstructed, restore sentinel placeholders back
+ * to the original Grafana macro/variable form.
+ *
+ * Filter-style sentinels: `col > '__SENT_xxx__'` → `$__macroName(col)`
+ * Value-style sentinels:  `'__SENT_GFTIMEFROM__'` → `$__timeFrom()`
+ *                         `'__SENT_DASHVAR_area__'` → `$area`
  */
 export function restoreSentinelsInSql(sql: string): string {
   return sql
+    // Filter-style (operator sentinels)
     .replace(/(\S+)\s*>\s*'__SENT_GFTIMEFILTER__'/g, '$__timeFilter($1)')
     .replace(/(\S+)\s*>\s*'__SENT_GFEPOCHFILTER__'/g, '$__unixEpochFilter($1)')
     .replace(/(\S+)\s*>\s*'__SENT_GFEPOCHNANOFILTER__'/g, '$__unixEpochNanoFilter($1)')
+    // Value-style (scalar sentinels)
+    .replace(/'__SENT_GFTIMEFROM__'/g, '$__timeFrom()')
+    .replace(/'__SENT_GFTIMETO__'/g, '$__timeTo()')
+    // Dashboard variable sentinels: '__SENT_DASHVAR_name__' → $name
+    .replace(/'__SENT_DASHVAR_([^']+)__'/g, '$$$1')
+}
+
+/**
+ * Restore sentinel placeholders in a raw string value (from filter rule, not SQL expression).
+ * The value is already unquoted (pgsql-parser strips the surrounding quotes from sval).
+ */
+export function restoreSentinelValue(val: string): string {
+  if (val === SENTINEL_TIMEFROM) return '$__timeFrom()'
+  if (val === SENTINEL_TIMETO) return '$__timeTo()'
+  if (val.startsWith(SENTINEL_DASHVAR_PREFIX) && val.endsWith('__')) {
+    return '$' + val.slice(SENTINEL_DASHVAR_PREFIX.length, -2)
+  }
+  return val
 }
 
 // ── pgsql-parser AST helpers ───────────────────────────────────────────────
@@ -257,7 +287,7 @@ function getConstValue(node: any): string {
   const ac = nk('A_Const', node)
   if (!ac) return ''
   if (ac.isnull) return ''
-  if (ac.sval !== undefined) return String(ac.sval.sval ?? '')
+  if (ac.sval !== undefined) return restoreSentinelValue(String(ac.sval.sval ?? ''))
   if (ac.ival !== undefined) return String(ac.ival.ival ?? 0)
   if (ac.fval !== undefined) return String(ac.fval.fval ?? 0)
   if (ac.boolval !== undefined) return String(ac.boolval.boolval ?? false)
@@ -848,8 +878,8 @@ function extractSelectedColumns(
       }
     }
 
-    // Everything else: store as expression
-    const expr = stringifyNode(val)
+    // Everything else: store as expression (restore any sentinel macros/variables)
+    const expr = restoreSentinelsInSql(stringifyNode(val))
     result.push({ id: crypto.randomUUID(), tableAlias: '', columnName: '', alias, expression: expr })
   }
 
@@ -1016,13 +1046,13 @@ function extractFilterItem(
     }
 
     // Fallback: store as raw expression
-    const raw = stringifyNode(node)
+    const raw = restoreSentinelsInSql(stringifyNode(node))
     warnings.push(`Complex WHERE condition stored as raw expression: "${raw.slice(0, 80)}${raw.length > 80 ? '...' : ''}"`)
     return makeRule('__raw__', '=', `__RAW__:${raw}`)
   }
 
   // Anything else (function call in WHERE, etc.)
-  const raw = stringifyNode(node)
+  const raw = restoreSentinelsInSql(stringifyNode(node))
   warnings.push(`Unsupported WHERE expression stored as raw: "${raw.slice(0, 80)}${raw.length > 80 ? '...' : ''}"`)
   return makeRule('__raw__', '=', `__RAW__:${raw}`)
 }

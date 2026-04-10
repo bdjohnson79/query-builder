@@ -564,3 +564,94 @@ describe('parseSqlToQueryState — complex template queries', () => {
     expect(result.queryState.offset).toBe(20)
   })
 })
+
+// ---------------------------------------------------------------------------
+
+describe('parseSqlToQueryState — Grafana macro/variable restoration', () => {
+  it('restores $__timeFrom() in a SELECT expression column', async () => {
+    const sql = `
+      SELECT $__timeFrom()::timestamp AS time, e.value
+      FROM event e
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const timeCol = result.queryState.selectedColumns.find((c) => c.alias === 'time')
+    expect(timeCol).toBeDefined()
+    expect(timeCol!.expression).toContain('$__timeFrom()')
+    expect(timeCol!.expression).not.toContain('2000-01-01')
+    expect(timeCol!.expression).not.toContain('__SENT_')
+    expect(noParseFailures(result.warnings)).toBe(true)
+  })
+
+  it('restores $__timeTo() in a SELECT expression column', async () => {
+    const sql = `
+      SELECT $__timeTo()::timestamp AS end_time, e.value
+      FROM event e
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const col = result.queryState.selectedColumns.find((c) => c.alias === 'end_time')
+    expect(col).toBeDefined()
+    expect(col!.expression).toContain('$__timeTo()')
+    expect(col!.expression).not.toContain('__SENT_')
+  })
+
+  it('restores $__timeFrom() in standard template Part 2 SELECT', async () => {
+    const sql = `WITH tags AS (
+      SELECT name, description, location FROM tag WHERE name = 'x'
+    )
+    SELECT time, t.description, value
+    FROM event e
+    INNER JOIN tags t ON e.tag = t.name
+    WHERE $__timeFilter("time")
+    UNION ALL
+    SELECT $__timeFrom()::timestamp AS time, t2.description, value
+    FROM tags t2
+    LEFT JOIN LATERAL (
+        SELECT time, t2.description, value
+        FROM event
+        WHERE time BETWEEN $__timeFrom()::timestamp - INTERVAL '30d' AND $__timeFrom()::timestamp
+            AND tag = t2.name
+        ORDER BY time DESC
+        LIMIT 1
+    ) e2 ON true
+    WHERE e2.value IS NOT NULL`
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const part2 = result.queryState.unionQuery!.queryState
+    const timeCol = part2.selectedColumns.find((c) => c.alias === 'time')
+    expect(timeCol).toBeDefined()
+    expect(timeCol!.expression).toContain('$__timeFrom()')
+    expect(timeCol!.expression).not.toContain('2000-01-01')
+    expect(timeCol!.expression).not.toContain('__SENT_')
+  })
+
+  it('restores dashboard variable $area in a filter value', async () => {
+    const sql = `
+      SELECT e.time, e.value
+      FROM event e
+      WHERE e.value = $area
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    // The value = $area comparison should restore $area in the filter rule value
+    const rule = result.queryState.where.rules[0] as { value: string }
+    expect(rule).toBeDefined()
+    expect(rule.value).toBe('$area')
+    expect(noParseFailures(result.warnings)).toBe(true)
+  })
+
+  it('restores ${varName} template variable in a filter value', async () => {
+    const sql = `
+      SELECT e.time, e.value
+      FROM event e
+      WHERE e.value = \${myVar}
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const rule = result.queryState.where.rules[0] as { value: string }
+    expect(rule).toBeDefined()
+    expect(rule.value).toBe('$myVar')
+    expect(noParseFailures(result.warnings)).toBe(true)
+  })
+})
