@@ -1413,8 +1413,9 @@ async function extractCtes(
       if (cteQuery) {
         const cteSelectStmt = nk('SelectStmt', cteQuery)
         if (cteSelectStmt) {
-          // For UNION ALL, larg is the anchor
-          const anchorAst = cteSelectStmt.larg ? nk('SelectStmt', cteSelectStmt.larg) : cteSelectStmt
+          // For UNION ALL, larg is the anchor.
+          // Note: larg/rarg are already unwrapped SelectStmt data — no nk() wrapper needed.
+          const anchorAst = cteSelectStmt.larg ? cteSelectStmt.larg : cteSelectStmt
           if (anchorAst) {
             const anchorQs = parseSelectAst(anchorAst, appTables, appColumns, schemas, cteMap, [], true)
             outputColumns = deriveOutputColumns(anchorQs)
@@ -1538,8 +1539,9 @@ function parseSelectAst(
   // For set ops, pgsql-parser puts the per-SELECT data in larg/rarg, not on
   // the outer node. ORDER BY / LIMIT / OFFSET are on the outer node.
   if (selectStmt.op && selectStmt.op !== 'SETOP_NONE') {
-    const largStmt = nk('SelectStmt', selectStmt.larg ?? {})
-    const rargStmt = nk('SelectStmt', selectStmt.rarg ?? {})
+    // larg/rarg are already unwrapped SelectStmt data objects — no { SelectStmt: ... } wrapper.
+    const largStmt = selectStmt.larg && Object.keys(selectStmt.larg).length > 0 ? selectStmt.larg : null
+    const rargStmt = selectStmt.rarg && Object.keys(selectStmt.rarg).length > 0 ? selectStmt.rarg : null
 
     // Recurse into both branches (handles 3+ chained UNIONs naturally)
     const largQs = largStmt

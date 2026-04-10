@@ -65,6 +65,7 @@ export function ImportSqlDialog({ open, onClose }: Props) {
   // ── Parse result ────────────────────────────────────────────────────────
   const [preview, setPreview] = useState<ParsedPreview | null>(null)
   const [parseError, setParseError] = useState<string>('')
+  const [importError, setImportError] = useState<string>('')
   const [parsing, setParsing] = useState(false)
   const [importing, setImporting] = useState(false)
 
@@ -140,6 +141,7 @@ export function ImportSqlDialog({ open, onClose }: Props) {
   function handleImport() {
     if (!preview) return
     setImporting(true)
+    setImportError('')
     try {
       loadQueryState(preview.queryState)
       if (preview.queryState.grafanaPanelType) {
@@ -150,6 +152,9 @@ export function ImportSqlDialog({ open, onClose }: Props) {
       }
       onClose()
       resetState()
+    } catch (err) {
+      console.error('[ImportSqlDialog] loadQueryState failed:', err)
+      setImportError(err instanceof Error ? err.message : String(err))
     } finally {
       setImporting(false)
     }
@@ -175,6 +180,7 @@ export function ImportSqlDialog({ open, onClose }: Props) {
     setDashboardError('')
     setPreview(null)
     setParseError('')
+    setImportError('')
   }
 
   function handleClose() {
@@ -333,6 +339,13 @@ export function ImportSqlDialog({ open, onClose }: Props) {
           {/* ── Parse result preview ───────────────────────────────────── */}
           {preview && <ParseResultPreview preview={preview} />}
         </div>
+
+        {importError && (
+          <div className="shrink-0 flex items-start gap-2 rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
+            <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+            Import failed: {importError}
+          </div>
+        )}
 
         <DialogFooter className="shrink-0 border-t pt-3">
           <Button variant="outline" onClick={handleClose}>
