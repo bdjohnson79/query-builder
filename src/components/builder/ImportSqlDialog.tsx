@@ -1,6 +1,5 @@
 'use client'
 import { useState, useRef } from 'react'
-import { useSchemaStore } from '@/store/schemaStore'
 import { useQueryStore } from '@/store/queryStore'
 import {
   Dialog,
@@ -11,14 +10,13 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { FileCode, AlertTriangle, CheckCircle, ChevronDown, Upload, Loader2 } from 'lucide-react'
-import { parseSqlToQueryState } from '@/lib/sql-parser/grafana-sql-importer'
 import {
   extractGrafanaPanelTargets,
   type GrafanaPanelTarget,
 } from '@/lib/sql-parser/grafana-dashboard-extractor'
 import { emptyQueryState } from '@/types/query'
-import type { QueryState } from '@/types/query'
-import type { GrafanaPanelType } from '@/types/query'
+import type { QueryState, GrafanaPanelType } from '@/types/query'
+import type { ImportResult } from '@/lib/sql-parser/grafana-sql-importer'
 
 // ── Props ─────────────────────────────────────────────────────────────────
 
@@ -47,10 +45,6 @@ type TabId = 'paste' | 'dashboard'
 // ── Main component ────────────────────────────────────────────────────────
 
 export function ImportSqlDialog({ open, onClose }: Props) {
-  const tables     = useSchemaStore((s) => s.tables)
-  const columns    = useSchemaStore((s) => s.columns)
-  const schemas    = useSchemaStore((s) => s.schemas)
-
   const loadQueryState    = useQueryStore((s) => s.loadQueryState)
   const setPanelType      = useQueryStore((s) => s.setPanelType)
   const setTimeColumn     = useQueryStore((s) => s.setTimeColumn)
@@ -83,7 +77,16 @@ export function ImportSqlDialog({ open, onClose }: Props) {
 
     setParsing(true)
     try {
-      const result = await parseSqlToQueryState(sql, tables, columns, schemas)
+      const res = await fetch('/api/parse-sql', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error ?? `Parse failed (${res.status})`)
+      }
+      const result: ImportResult = await res.json()
       const detectedTables = result.queryState.tables.map((t) => t.tableName)
       const unknownWarnings = result.warnings.filter((w) => w.includes('not found in Schema Admin'))
 
