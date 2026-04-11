@@ -1543,6 +1543,24 @@ async function extractCtes(
       warnings.push(...cteWarnings.map((w) => `CTE "${name}": ${w}`))
 
       const outputColumns = deriveOutputColumns(innerQs)
+
+      // If no tables resolved (schema mismatch or tableless CTE), preserve original SQL verbatim
+      if (innerQs.tables.length === 0) {
+        const originalBody = originalCteTexts.get(name) ?? originalCteTexts.get(name.toLowerCase()) ?? ''
+        const cteDef: CTEDef = {
+          id: cteId,
+          name,
+          recursive: false,
+          queryState: emptyQueryState(),
+          rawSql: originalBody,
+          outputColumns: outputColumns.length > 0 ? outputColumns : inferOutputColumns(originalBody),
+        }
+        ctes.push(cteDef)
+        cteMap.set(name.toLowerCase(), cteDef)
+        warnings.push(`CTE "${name}": tables not found in Schema Admin — imported as raw SQL.`)
+        continue
+      }
+
       const cteDef: CTEDef = {
         id: cteId,
         name,
@@ -1740,17 +1758,21 @@ async function parseSqlWithPerCteStrategy(
         const cteWarnings: string[] = []
         const innerQs = parseSelectAst(selectStmt, appTables, appColumns, schemas, cteMap, cteWarnings, true)
         warnings.push(...cteWarnings.map((w) => `CTE "${entry.name}": ${w}`))
-        const outputColumns = deriveOutputColumns(innerQs)
-        const cteDef: CTEDef = {
-          id: cteId,
-          name: entry.name,
-          recursive: false,
-          queryState: innerQs,
-          outputColumns,
+        // Only treat as visually parsed if tables were actually resolved;
+        // otherwise fall through to the rawSql fallback below.
+        if (innerQs.tables.length > 0) {
+          const outputColumns = deriveOutputColumns(innerQs)
+          const cteDef: CTEDef = {
+            id: cteId,
+            name: entry.name,
+            recursive: false,
+            queryState: innerQs,
+            outputColumns,
+          }
+          ctes.push(cteDef)
+          cteMap.set(entry.name.toLowerCase(), cteDef)
+          parsedVisually = true
         }
-        ctes.push(cteDef)
-        cteMap.set(entry.name.toLowerCase(), cteDef)
-        parsedVisually = true
       }
     } catch { /* fall through to raw SQL */ }
 

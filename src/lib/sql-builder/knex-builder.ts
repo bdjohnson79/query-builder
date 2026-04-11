@@ -513,8 +513,13 @@ function buildCteFragment(cte: CTEDef): string {
     const anchor = cte.anchorSql?.trim() ?? '-- anchor query here'
     const step = cte.recursiveStepSql?.trim() ?? `-- recursive step here (may reference ${cte.name})`
     innerSql = `${anchor}\nUNION ALL\n${step}`
+  } else if (cte.rawSql != null) {
+    // Raw SQL mode — emit verbatim; fall back to SELECT NULL if the textarea is empty
+    innerSql = cte.rawSql.trim() || 'SELECT NULL'
   } else {
-    innerSql = cte.rawSql?.trim() ?? buildRawSql(cte.queryState)
+    const built = buildRawSql(cte.queryState)
+    // buildRawSql emits a UI hint comment when there are no tables — that is not valid CTE SQL
+    innerSql = built.startsWith('--') ? 'SELECT NULL' : built
   }
   return `${qi(cte.name)} AS (\n${innerSql}\n)`
 }
