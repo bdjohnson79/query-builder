@@ -210,7 +210,18 @@ function buildRawSql(state: QueryState, omitTrailer = false): string {
         ? `${qi(j.rightTableAlias)}.${qi(j.rightColumn)}`
         : `${qi(j.leftTableAlias)}.${qi(j.leftColumn)}`
 
-      const onClause = j.onExpression?.trim() ? j.onExpression.trim() : `${onLeft} = ${onRight}`
+      let onClause: string
+      if (j.onExpression?.trim()) {
+        onClause = j.onExpression.trim()
+      } else {
+        const conditions = [`${onLeft} = ${onRight}`]
+        for (const c of j.additionalOnConditions ?? []) {
+          conditions.push(
+            `${qi(c.leftTableAlias)}.${qi(c.leftColumn)} ${c.operator} ${qi(c.rightTableAlias)}.${qi(c.rightColumn)}`
+          )
+        }
+        onClause = conditions.join(' AND ')
+      }
       parts.push(`${joinKeyword} ${newRef}${newAs} ON ${onClause}`)
     }
   }
@@ -299,10 +310,12 @@ function buildSelectList(
   const gapfillActive = !!timescaleBucket?.gapfill
 
   for (const col of selectedColumns) {
-    // Base reference: expression or table.column
+    // Base reference: expression, bare *, or table.column
     const ref = col.expression
       ? col.expression
-      : `${qi(col.tableAlias)}.${qi(col.columnName)}`
+      : col.columnName === '*'
+        ? '*'
+        : `${qi(col.tableAlias)}.${qi(col.columnName)}`
 
     // Wrap with aggregate function if set
     let expr: string
@@ -403,6 +416,27 @@ const JSONB_MARKER = '::jsonb::'
 function buildRuleFragment(rule: FilterRule): string | null {
   const field = rule.field  // "alias.column" — unquoted from react-querybuilder
   const val = rule.value
+
+  // Subquery rules — emit `field op (sub_sql)` / `EXISTS (sub_sql)`.
+  // The subquery's QueryState is rendered via buildRawSql so it shares all the
+  // same SELECT/JOIN/CTE machinery as the outer query.
+  if (rule.subquery) {
+    const subSql = buildRawSql(rule.subquery, true)
+    const indented = subSql.split('\n').map(l => '  ' + l).join('\n')
+    if (rule.operator === 'exists')    return `EXISTS (\n${indented}\n)`
+    if (rule.operator === 'notExists') return `NOT EXISTS (\n${indented}\n)`
+    // Comparison operators: need a quoted field reference
+    const fieldParts = field.split('.')
+    const quotedField = fieldParts.length === 2
+      ? `${qi(fieldParts[0])}.${qi(fieldParts[1])}`
+      : field
+    if (rule.operator === 'in')    return `${quotedField} IN (\n${indented}\n)`
+    if (rule.operator === 'notIn') return `${quotedField} NOT IN (\n${indented}\n)`
+    if (['=', '!=', '<', '<=', '>', '>='].includes(rule.operator)) {
+      return `${quotedField} ${rule.operator} (\n${indented}\n)`
+    }
+    return null
+  }
 
   // Detect JSONB path: "alias::jsonb::columnName::dot.path"
   let quotedField: string

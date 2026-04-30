@@ -293,6 +293,11 @@ export function QueryCanvas({ onStartTour }: QueryCanvasProps) {
 
   const { setNodeRef, isOver } = useDroppable({ id: 'canvas' })
 
+  // Memoise to keep stable references across HMR / Fast Refresh — React Flow
+  // warns when nodeTypes/edgeTypes change identity between renders.
+  const nodeTypesMemo = useMemo(() => nodeTypes, [])
+  const edgeTypesMemo = useMemo(() => edgeTypes, [])
+
   return (
     <div ref={setNodeRef} className={cn('h-full w-full', isOver && 'bg-blue-50/30')}>
       <ReactFlow
@@ -302,8 +307,8 @@ export function QueryCanvas({ onStartTour }: QueryCanvasProps) {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodeDragStop={onNodeDragStop}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
+        nodeTypes={nodeTypesMemo}
+        edgeTypes={edgeTypesMemo}
         fitView
         deleteKeyCode="Delete"
       >

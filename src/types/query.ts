@@ -49,6 +49,18 @@ export interface JoinDef {
   rightTableAlias: string
   rightColumn: string
   onExpression?: string  // when set, replaces the generated ON clause entirely
+  /** Additional structured equality conjuncts ANDed onto the ON clause.
+   *  e.g. for `a.x = b.x AND a.y = b.y AND a.z > b.z`, the first conjunct lives
+   *  in leftColumn/rightColumn and the rest are listed here. Only populated when
+   *  every conjunct is a simple `alias.col op alias.col` shape; otherwise the
+   *  whole ON clause falls back to onExpression. */
+  additionalOnConditions?: {
+    leftTableAlias: string
+    leftColumn: string
+    operator: string
+    rightTableAlias: string
+    rightColumn: string
+  }[]
   // LATERAL join fields (only used when type === 'LATERAL')
   lateralSubquery?: QueryState
   lateralAlias?: string
@@ -121,6 +133,11 @@ export interface FilterRule {
   field: string        // "tableAlias.columnName"
   operator: string
   value: string | number | boolean | null
+  /** When set, the rule is a subquery comparison: `field op (subquery_sql)`,
+   *  `EXISTS (subquery_sql)`, or `field IN (subquery_sql)`. Operators are:
+   *  'in' / 'notIn' / 'exists' / 'notExists' / '=' / '!=' / '<' / '<=' / '>' / '>=' /
+   *  'anyIn' / 'allIn' (= ANY (sub) / = ALL (sub)). */
+  subquery?: QueryState
 }
 
 export interface FilterGroup {

@@ -10,7 +10,9 @@
  */
 import { describe, it, expect } from 'vitest'
 import { parseSqlToQueryState } from './grafana-sql-importer'
+import { buildSql } from '@/lib/sql-builder/knex-builder'
 import type { AppTable, AppColumn, AppSchema } from '@/types/schema'
+import type { FilterRule } from '@/types/query'
 
 // ---------------------------------------------------------------------------
 // ST-One schema fixtures (from drizzle/seed.sql)
@@ -653,5 +655,323 @@ describe('parseSqlToQueryState — Grafana macro/variable restoration', () => {
     expect(rule).toBeDefined()
     expect(rule.value).toBe('$myVar')
     expect(noParseFailures(result.warnings)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('parseSqlToQueryState — ORDER BY NULLS FIRST/LAST', () => {
+  it('preserves NULLS LAST on ORDER BY items', async () => {
+    const sql = `SELECT e.time, e.value FROM event e ORDER BY e.value DESC NULLS LAST`
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    expect(result.queryState.orderBy).toHaveLength(1)
+    const ob = result.queryState.orderBy[0]
+    expect(ob.direction).toBe('DESC')
+    expect(ob.nulls).toBe('NULLS LAST')
+
+    // Round-trip: builder should re-emit NULLS LAST
+    const sqlOut = buildSql(result.queryState)
+    expect(sqlOut.toUpperCase()).toContain('NULLS LAST')
+  })
+
+  it('preserves NULLS FIRST on ORDER BY items', async () => {
+    const sql = `SELECT e.time FROM event e ORDER BY e.time ASC NULLS FIRST`
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    expect(result.queryState.orderBy[0].nulls).toBe('NULLS FIRST')
+    expect(buildSql(result.queryState).toUpperCase()).toContain('NULLS FIRST')
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('parseSqlToQueryState — aggregate FILTER (WHERE …)', () => {
+  it('extracts FILTER (WHERE …) on COUNT(*)', async () => {
+    const sql = `
+      SELECT t.name, COUNT(*) FILTER (WHERE t.factor > 1) AS positive_count
+      FROM tag t
+      GROUP BY t.name
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const aggCol = result.queryState.selectedColumns.find((c) => c.aggregate === 'COUNT')
+    expect(aggCol).toBeDefined()
+    expect(aggCol!.filterClause).toBeDefined()
+    expect(aggCol!.filterClause).toContain('factor')
+
+    const out = buildSql(result.queryState).replace(/\s+/g, ' ').toUpperCase()
+    expect(out).toContain('FILTER ( WHERE')
+  })
+
+  it('extracts FILTER (WHERE …) on SUM(col)', async () => {
+    const sql = `
+      SELECT SUM(e.value) FILTER (WHERE e.value > 0) AS positive_sum
+      FROM event e
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const sumCol = result.queryState.selectedColumns.find((c) => c.aggregate === 'SUM')
+    expect(sumCol?.filterClause).toMatch(/value\s*>\s*0/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('parseSqlToQueryState — window functions', () => {
+  it('extracts ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)', async () => {
+    const sql = `
+      SELECT e.tag, ROW_NUMBER() OVER (PARTITION BY e.tag ORDER BY e.time DESC) AS rn
+      FROM event e
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    expect(result.queryState.windowFunctions).toHaveLength(1)
+    const wf = result.queryState.windowFunctions[0]
+    expect(wf.fn).toBe('ROW_NUMBER')
+    expect(wf.alias).toBe('rn')
+    expect(wf.partitionBy).toHaveLength(1)
+    expect(wf.partitionBy[0].columnName).toBe('tag')
+    expect(wf.orderBy).toHaveLength(1)
+    expect(wf.orderBy[0].columnName).toBe('time')
+    expect(wf.orderBy[0].direction).toBe('DESC')
+
+    // Window functions should NOT also appear in selectedColumns
+    expect(result.queryState.selectedColumns.find((c) => c.alias === 'rn')).toBeUndefined()
+  })
+
+  it('extracts SUM(x) OVER (...) with expression argument', async () => {
+    const sql = `
+      SELECT e.tag, SUM(e.value) OVER (PARTITION BY e.tag) AS running
+      FROM event e
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    expect(result.queryState.windowFunctions).toHaveLength(1)
+    const wf = result.queryState.windowFunctions[0]
+    expect(wf.fn).toBe('SUM')
+    expect(wf.expression).toBe('e.value')
+    expect(wf.alias).toBe('running')
+  })
+
+  it('extracts ROWS BETWEEN frame clause', async () => {
+    const sql = `
+      SELECT SUM(e.value) OVER (
+        ORDER BY e.time
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+      ) AS cumulative
+      FROM event e
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const wf = result.queryState.windowFunctions[0]
+    expect(wf.frameClause).toBe('ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW')
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('parseSqlToQueryState — subqueries in WHERE', () => {
+  it('imports x IN (subquery) as a structured rule with nested QueryState', async () => {
+    const sql = `
+      SELECT e.time, e.value FROM event e
+      WHERE e.tag IN (SELECT t.name FROM tag t WHERE t.factor > 1)
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    expect(result.queryState.where.rules).toHaveLength(1)
+    const rule = result.queryState.where.rules[0] as FilterRule
+    expect(rule.operator).toBe('in')
+    expect(rule.field).toBe('e.tag')
+    expect(rule.subquery).toBeDefined()
+    expect(rule.subquery!.tables).toHaveLength(1)
+    expect(rule.subquery!.tables[0].tableName).toBe('tag')
+
+    // Round-trip
+    const sqlOut = buildSql(result.queryState).replace(/\s+/g, ' ').toUpperCase()
+    expect(sqlOut).toContain(' IN (')
+    expect(sqlOut).toContain('FROM TAG AS T')
+  })
+
+  it('imports EXISTS (subquery) as a structured rule', async () => {
+    const sql = `
+      SELECT e.time FROM event e
+      WHERE EXISTS (SELECT 1 FROM tag t WHERE t.name = e.tag)
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const rule = result.queryState.where.rules[0] as FilterRule
+    expect(rule.operator).toBe('exists')
+    expect(rule.subquery).toBeDefined()
+    expect(rule.subquery!.tables[0].tableName).toBe('tag')
+
+    const sqlOut = buildSql(result.queryState).toUpperCase()
+    expect(sqlOut).toContain('EXISTS (')
+  })
+
+  it('imports NOT EXISTS (subquery) as a structured rule', async () => {
+    const sql = `
+      SELECT e.time FROM event e
+      WHERE NOT EXISTS (SELECT 1 FROM tag t WHERE t.name = e.tag)
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const rule = result.queryState.where.rules[0] as FilterRule
+    expect(rule.operator).toBe('notExists')
+    expect(rule.subquery).toBeDefined()
+
+    expect(buildSql(result.queryState).toUpperCase()).toContain('NOT EXISTS (')
+  })
+
+  it('imports x NOT IN (subquery) as a structured rule', async () => {
+    const sql = `
+      SELECT e.time FROM event e
+      WHERE e.tag NOT IN (SELECT t.name FROM tag t)
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const rule = result.queryState.where.rules[0] as FilterRule
+    expect(rule.operator).toBe('notIn')
+    expect(rule.subquery).toBeDefined()
+  })
+
+  it('imports a scalar subquery comparison: x = (SELECT MAX(...) ...)', async () => {
+    const sql = `
+      SELECT e.time, e.value FROM event e
+      WHERE e.value = (SELECT MAX(value) FROM event)
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const rule = result.queryState.where.rules[0] as FilterRule
+    expect(rule.operator).toBe('=')
+    expect(rule.subquery).toBeDefined()
+    // The subquery has a MAX aggregate
+    expect(rule.subquery!.selectedColumns.some((c) => c.aggregate === 'MAX')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('parseSqlToQueryState — compound JOIN ON', () => {
+  it('decomposes multi-equality JOIN ON into structured fields', async () => {
+    const sql = `
+      SELECT e.time, t.name
+      FROM event e
+      INNER JOIN tag t ON e.tag = t.name AND e.value = t.factor
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    expect(result.queryState.joins).toHaveLength(1)
+    const j = result.queryState.joins[0]
+    expect(j.onExpression).toBeUndefined()
+    expect(j.additionalOnConditions).toHaveLength(1)
+    expect(j.additionalOnConditions![0].operator).toBe('=')
+
+    // Builder re-emits both conjuncts
+    const sqlOut = buildSql(result.queryState).toUpperCase()
+    expect(sqlOut).toContain(' AND ')
+    expect(sqlOut).toContain('FACTOR')
+  })
+
+  it('falls back to onExpression when ON contains a non-column comparison', async () => {
+    const sql = `
+      SELECT e.time
+      FROM event e
+      INNER JOIN tag t ON e.tag = t.name AND t.factor > 1
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const j = result.queryState.joins[0]
+    expect(j.onExpression).toBeDefined()
+    expect(j.additionalOnConditions).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('parseSqlToQueryState — CASE expression in WHERE', () => {
+  it('preserves a CASE expression as a single expression-rule with a specific warning', async () => {
+    const sql = `
+      SELECT e.time FROM event e
+      WHERE CASE WHEN e.value > 0 THEN TRUE ELSE FALSE END
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const rule = result.queryState.where.rules[0] as FilterRule
+    expect(rule.operator).toBe('expression')
+    expect(String(rule.value).toUpperCase()).toContain('CASE')
+    expect(result.warnings.some((w) => w.includes('CASE expression'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('parseSqlToQueryState — schema-qualified and quoted identifiers', () => {
+  it('matches schema-qualified table refs by lowercased schema and name', async () => {
+    const sql = `SELECT e.time FROM "KHC x ST-One".event e`
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    expect(result.queryState.tables).toHaveLength(1)
+    expect(result.queryState.tables[0].tableName).toBe('event')
+  })
+
+  it('matches a quoted lower-case table name', async () => {
+    const sql = `SELECT e.time FROM "event" e`
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    expect(result.queryState.tables).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('parseSqlToQueryState — deep UNION chains', () => {
+  it('chains 3+ branches with mixed set operators', async () => {
+    const sql = `
+      SELECT e.tag FROM event e WHERE e.value > 0
+      UNION ALL
+      SELECT e.tag FROM event e WHERE e.value < 0
+      UNION
+      SELECT t.name FROM tag t
+      INTERSECT
+      SELECT e.tag FROM event e
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    const operators: string[] = []
+    let cur = result.queryState.unionQuery
+    while (cur) {
+      operators.push(cur.operator)
+      cur = cur.queryState.unionQuery
+    }
+    expect(operators).toEqual(['UNION ALL', 'UNION', 'INTERSECT'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('parseSqlToQueryState — LIMIT/OFFSET non-literal warning', () => {
+  it('warns when LIMIT is a non-literal expression and drops it', async () => {
+    const sql = `SELECT e.time FROM event e LIMIT 100 + 1`
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    expect(result.queryState.limit).toBeNull()
+    expect(result.warnings.some((w) => w.startsWith('LIMIT'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('parseSqlToQueryState — GROUPING SETS warning', () => {
+  it('warns and drops items when GROUP BY uses ROLLUP', async () => {
+    const sql = `
+      SELECT e.tag, COUNT(*)
+      FROM event e
+      GROUP BY ROLLUP(e.tag)
+    `
+    const result = await parseSqlToQueryState(sql, ALL_TABLES, COLUMNS, SCHEMAS)
+
+    expect(result.queryState.groupBy).toHaveLength(0)
+    expect(result.warnings.some((w) => w.includes('GROUP BY'))).toBe(true)
   })
 })

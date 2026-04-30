@@ -3,12 +3,18 @@
 // parse SQL into an AST, then maps the AST to the application's QueryState.
 //
 // Reconstruction quality:
-//   Good:  simple JOINs, column refs, aggregates, WHERE/GROUP BY/ORDER BY/LIMIT
-//          non-recursive CTEs (fully visual), CTE virtual tables in main query
+//   Good:  simple JOINs (INNER/LEFT/RIGHT/FULL OUTER/LATERAL), column refs,
+//          aggregates with FILTER (WHERE …), WHERE/GROUP BY/ORDER BY/LIMIT,
+//          NULLS FIRST/LAST, window functions (PARTITION BY / ORDER BY / frame),
+//          non-recursive CTEs (fully visual), CTE virtual tables in main query,
+//          UNION / INTERSECT / EXCEPT chains (all branches),
+//          subqueries in WHERE (IN / NOT IN / EXISTS / NOT EXISTS / scalar — all visual),
 //          PostgreSQL-specific operators (<@, @>, &&, AT TIME ZONE, etc.)
-//   Fair:  complex WHERE (preserved as raw rule), IN lists, BETWEEN
-//          recursive CTEs (guided mode: anchor SQL + recursive step SQL)
-//   None:  subqueries in FROM (skipped + warned), UNION (only first branch)
+//   Fair:  complex non-equality JOIN ON (preserved as raw onExpression),
+//          recursive CTEs (guided mode: anchor SQL + recursive step SQL),
+//          unmodelled WHERE expressions (preserved as raw rule)
+//   None:  subqueries in FROM (skipped + warned),
+//          GROUPING SETS / ROLLUP / CUBE (warned, not yet visual)
 
 import { parse, deparseSync } from 'pgsql-parser'
 import {
@@ -31,6 +37,7 @@ import type {
   ColumnMeta,
   UnionBranch,
   UnionOperator,
+  WindowFunctionDef,
 } from '@/types/query'
 import type { AppTable, AppColumn, AppSchema } from '@/types/schema'
 
@@ -460,15 +467,26 @@ function stringifyNode(node: any): string {
 
 // ── Table extraction ───────────────────────────────────────────────────────
 
-/** Try to infer which table alias owns a column name by scanning schema. */
-function inferTableAlias(colName: string, aliasMap: Map<string, TableInstance>): string | undefined {
+/** Try to infer which table alias owns a column name by scanning schema.
+ *  When the same column exists on multiple tables, the first match wins — but
+ *  if `warnings` is provided, an ambiguity warning is emitted naming all candidates. */
+function inferTableAlias(
+  colName: string,
+  aliasMap: Map<string, TableInstance>,
+  warnings?: string[]
+): string | undefined {
+  const matches: string[] = []
   for (const [alias, inst] of aliasMap) {
     if (alias !== inst.alias) continue
     if (inst.columns.some((c) => c.name.toLowerCase() === colName.toLowerCase())) {
-      return alias
+      matches.push(alias)
     }
   }
-  return undefined
+  if (matches.length === 0) return undefined
+  if (matches.length > 1 && warnings) {
+    warnings.push(`Bare column "${colName}" is ambiguous (could be ${matches.join(', ')}) — picked "${matches[0]}".`)
+  }
+  return matches[0]
 }
 
 /**
@@ -631,25 +649,66 @@ function flattenJoinExprs(item: PgNode): PgNode[] {
   ]
 }
 
-/** Try to extract a simple equality ON condition (a.col = b.col). */
+interface SimpleOnCond {
+  leftTableAlias: string
+  leftColumn: string
+  operator: string
+  rightTableAlias: string
+  rightColumn: string
+}
+
+/** Try to extract a simple equality ON condition (a.col = b.col). Operator is always '='. */
 function extractSimpleOnCondition(qualsNode: PgNode, aliasMap: Map<string, TableInstance>) {
-  const ae = nk('A_Expr', qualsNode)
+  const single = extractSingleAliasColCmp(qualsNode, aliasMap)
+  if (!single || single.operator !== '=') return null
+  return {
+    leftTableAlias: single.leftTableAlias,
+    leftColumn: single.leftColumn,
+    rightTableAlias: single.rightTableAlias,
+    rightColumn: single.rightColumn,
+  }
+}
+
+/** Extract a single `alias.col op alias.col` comparison (any operator). */
+function extractSingleAliasColCmp(node: PgNode, aliasMap: Map<string, TableInstance>): SimpleOnCond | null {
+  const ae = nk('A_Expr', node)
   if (!ae) return null
   if ((ae.kind ?? 'AEXPR_OP') !== 'AEXPR_OP') return null
-  if (getOpName(ae.name ?? []) !== '=') return null
-
+  const op = getOpName(ae.name ?? [])
+  if (!op) return null
   const left = getColRefParts(ae.lexpr)
   const right = getColRefParts(ae.rexpr)
   if (!left || !right) return null
   if (!left.tableAlias || !right.tableAlias) return null
   if (!aliasMap.has(left.tableAlias) || !aliasMap.has(right.tableAlias)) return null
-
   return {
     leftTableAlias: left.tableAlias,
     leftColumn: left.colName,
+    operator: op,
     rightTableAlias: right.tableAlias,
     rightColumn: right.colName,
   }
+}
+
+/** Decompose an AND-chain of equality/comparison conjuncts into a list. Returns null if any
+ *  conjunct is not a simple alias.col op alias.col shape (caller falls back to raw onExpression). */
+function extractCompoundOnConditions(node: PgNode, aliasMap: Map<string, TableInstance>): SimpleOnCond[] | null {
+  const out: SimpleOnCond[] = []
+  const walk = (n: PgNode): boolean => {
+    const be = nk('BoolExpr', n)
+    if (be && be.boolop === 'AND_EXPR') {
+      for (const arg of (be.args ?? [])) {
+        if (!walk(arg)) return false
+      }
+      return true
+    }
+    const c = extractSingleAliasColCmp(n, aliasMap)
+    if (!c) return false
+    out.push(c)
+    return true
+  }
+  if (!walk(node)) return null
+  return out.length > 0 ? out : null
 }
 
 function extractJoins(
@@ -725,18 +784,28 @@ function extractJoins(
     let rightColumn: string | undefined
     let onExpression: string | undefined
 
+    let additionalOnConditions: JoinDef['additionalOnConditions']
     if (je.quals) {
-      const simple = extractSimpleOnCondition(je.quals, aliasMap)
-      if (simple) {
-        if (simple.rightTableAlias === rightAlias || simple.rightTableAlias === rightTableName) {
-          leftAlias = simple.leftTableAlias
-          leftColumn = simple.leftColumn
-          rightColumn = simple.rightColumn
+      // Try compound (AND-chained) decomposition first
+      const compound = extractCompoundOnConditions(je.quals, aliasMap)
+      if (compound && compound.length > 0) {
+        // First equality with operator = is the primary; all others go into additionalOnConditions
+        const primaryIdx = compound.findIndex((c) => c.operator === '=' &&
+          (c.rightTableAlias === rightAlias || c.rightTableAlias === rightTableName ||
+           c.leftTableAlias === rightAlias || c.leftTableAlias === rightTableName))
+        const idx = primaryIdx >= 0 ? primaryIdx : 0
+        const primary = compound[idx]
+        if (primary.rightTableAlias === rightAlias || primary.rightTableAlias === rightTableName) {
+          leftAlias = primary.leftTableAlias
+          leftColumn = primary.leftColumn
+          rightColumn = primary.rightColumn
         } else {
-          leftAlias = simple.rightTableAlias
-          leftColumn = simple.rightColumn
-          rightColumn = simple.leftColumn
+          leftAlias = primary.rightTableAlias
+          leftColumn = primary.rightColumn
+          rightColumn = primary.leftColumn
         }
+        const rest = compound.filter((_, i) => i !== idx)
+        if (rest.length > 0) additionalOnConditions = rest
       } else {
         onExpression = stringifyNode(je.quals)
         warnings.push(`JOIN "${rightTableName}" has a complex ON condition — stored as raw expression.`)
@@ -766,6 +835,9 @@ function extractJoins(
       rightColumn: rightColumn ?? 'id',
     }
     if (onExpression) join.onExpression = onExpression
+    if (additionalOnConditions && additionalOnConditions.length > 0) {
+      join.additionalOnConditions = additionalOnConditions
+    }
 
     joins.push(join)
   }
@@ -781,10 +853,120 @@ const AGGREGATE_NAMES = new Set([
   'every', 'bit_and', 'bit_or', 'xml_agg',
 ])
 
+// PostgreSQL window frame option bit flags (from src/include/parser/parsenodes.h).
+// Used to reconstruct the frame clause text (e.g. "ROWS BETWEEN UNBOUNDED PRECEDING
+// AND CURRENT ROW") from a numeric frameOptions value.
+const FRAMEOPTION_NONDEFAULT = 0x00001
+const FRAMEOPTION_RANGE = 0x00002
+const FRAMEOPTION_ROWS = 0x00004
+const FRAMEOPTION_GROUPS = 0x00008
+const FRAMEOPTION_BETWEEN = 0x00010
+const FRAMEOPTION_START_UNBOUNDED_PRECEDING = 0x00020
+const FRAMEOPTION_END_UNBOUNDED_FOLLOWING = 0x00100
+const FRAMEOPTION_START_CURRENT_ROW = 0x00200
+const FRAMEOPTION_END_CURRENT_ROW = 0x00400
+const FRAMEOPTION_START_OFFSET_PRECEDING = 0x00800
+const FRAMEOPTION_END_OFFSET_PRECEDING = 0x01000
+const FRAMEOPTION_START_OFFSET_FOLLOWING = 0x02000
+const FRAMEOPTION_END_OFFSET_FOLLOWING = 0x04000
+const FRAMEOPTION_EXCLUDE_CURRENT_ROW = 0x08000
+const FRAMEOPTION_EXCLUDE_GROUP = 0x10000
+const FRAMEOPTION_EXCLUDE_TIES = 0x20000
+
+function buildFrameClause(wd: PgNode): string | undefined {
+  const opts: number = typeof wd.frameOptions === 'number' ? wd.frameOptions : 0
+  if (!opts || (opts & FRAMEOPTION_NONDEFAULT) === 0) return undefined
+
+  const unit = (opts & FRAMEOPTION_RANGE)  ? 'RANGE'
+             : (opts & FRAMEOPTION_ROWS)   ? 'ROWS'
+             : (opts & FRAMEOPTION_GROUPS) ? 'GROUPS'
+             : 'RANGE'
+
+  const startBound =
+      (opts & FRAMEOPTION_START_UNBOUNDED_PRECEDING) ? 'UNBOUNDED PRECEDING'
+    : (opts & FRAMEOPTION_START_CURRENT_ROW)         ? 'CURRENT ROW'
+    : (opts & FRAMEOPTION_START_OFFSET_PRECEDING)    ? `${stringifyNode(wd.startOffset ?? {})} PRECEDING`
+    : (opts & FRAMEOPTION_START_OFFSET_FOLLOWING)    ? `${stringifyNode(wd.startOffset ?? {})} FOLLOWING`
+    : 'UNBOUNDED PRECEDING'
+
+  const endBound =
+      (opts & FRAMEOPTION_END_UNBOUNDED_FOLLOWING) ? 'UNBOUNDED FOLLOWING'
+    : (opts & FRAMEOPTION_END_CURRENT_ROW)         ? 'CURRENT ROW'
+    : (opts & FRAMEOPTION_END_OFFSET_PRECEDING)    ? `${stringifyNode(wd.endOffset ?? {})} PRECEDING`
+    : (opts & FRAMEOPTION_END_OFFSET_FOLLOWING)    ? `${stringifyNode(wd.endOffset ?? {})} FOLLOWING`
+    : null
+
+  let exclude = ''
+  if (opts & FRAMEOPTION_EXCLUDE_CURRENT_ROW) exclude = ' EXCLUDE CURRENT ROW'
+  else if (opts & FRAMEOPTION_EXCLUDE_GROUP) exclude = ' EXCLUDE GROUP'
+  else if (opts & FRAMEOPTION_EXCLUDE_TIES) exclude = ' EXCLUDE TIES'
+
+  if (opts & FRAMEOPTION_BETWEEN) {
+    return `${unit} BETWEEN ${startBound} AND ${endBound ?? 'CURRENT ROW'}${exclude}`
+  }
+  return `${unit} ${startBound}${exclude}`
+}
+
+/** Build a WindowFunctionDef from a FuncCall whose `over` field is set. */
+function buildWindowFunction(
+  fc: PgNode,
+  alias: string | undefined,
+  aliasMap: Map<string, TableInstance>
+): WindowFunctionDef {
+  const fnName = getFuncName(fc.funcname ?? []).toUpperCase()
+  const wd = nk('WindowDef', fc.over) ?? fc.over ?? {}
+
+  // Function argument — most window fns take 0–1 args; if multiple, comma-join their stringified form.
+  let expression: string | undefined
+  if (fc.agg_star) {
+    expression = '*'
+  } else if (Array.isArray(fc.args) && fc.args.length > 0) {
+    expression = fc.args.map((a: PgNode) => {
+      const cr = getColRefParts(a)
+      if (cr) return cr.tableAlias ? `${cr.tableAlias}.${cr.colName}` : cr.colName
+      return restoreSentinelsInSql(stringifyNode(a))
+    }).join(', ')
+  }
+
+  const partitionBy: ColumnRef[] = ((wd.partitionClause ?? []) as PgNode[]).flatMap((node) => {
+    const cr = getColRefParts(node)
+    if (!cr) return []
+    const tableAlias = cr.tableAlias ?? inferTableAlias(cr.colName, aliasMap) ?? ''
+    return [{ tableAlias, columnName: cr.colName }]
+  })
+
+  const orderBy: OrderByItem[] = ((wd.orderClause ?? []) as PgNode[]).flatMap((item) => {
+    const sb = nk('SortBy', item)
+    if (!sb) return []
+    const cr = getColRefParts(sb.node ?? {})
+    if (!cr) return []
+    const direction = (sb.sortby_dir === 'SORTBY_DESC' ? 'DESC' : 'ASC') as 'ASC' | 'DESC'
+    const nulls: 'NULLS FIRST' | 'NULLS LAST' | undefined =
+      sb.sortby_nulls === 'SORTBY_NULLS_FIRST' ? 'NULLS FIRST'
+      : sb.sortby_nulls === 'SORTBY_NULLS_LAST' ? 'NULLS LAST'
+      : undefined
+    const tableAlias = cr.tableAlias ?? inferTableAlias(cr.colName, aliasMap) ?? ''
+    return [{ tableAlias, columnName: cr.colName, direction, ...(nulls ? { nulls } : {}) }]
+  })
+
+  const frameClause = buildFrameClause(wd)
+
+  return {
+    id: crypto.randomUUID(),
+    fn: fnName,
+    ...(expression !== undefined ? { expression } : {}),
+    partitionBy,
+    orderBy,
+    ...(frameClause ? { frameClause } : {}),
+    alias: alias ?? fnName.toLowerCase(),
+  }
+}
+
 function extractSelectedColumns(
   targetList: PgNode[],
   aliasMap: Map<string, TableInstance>,
-  warnings: string[]
+  warnings: string[],
+  windowFunctionsOut: WindowFunctionDef[]
 ): SelectedColumn[] {
   const result: SelectedColumn[] = []
 
@@ -823,7 +1005,7 @@ function extractSelectedColumns(
         }
         continue
       }
-      const tableAlias = cr.tableAlias ?? inferTableAlias(cr.colName, aliasMap)
+      const tableAlias = cr.tableAlias ?? inferTableAlias(cr.colName, aliasMap, warnings)
       result.push({
         id: crypto.randomUUID(),
         tableAlias: tableAlias ?? '',
@@ -833,10 +1015,16 @@ function extractSelectedColumns(
       continue
     }
 
-    // FuncCall — check for aggregate or AT TIME ZONE
+    // FuncCall — check for window function, aggregate, or AT TIME ZONE
     const fc = nk('FuncCall', val)
     if (fc) {
       const fnName = getFuncName(fc.funcname ?? [])
+
+      // Window function (OVER clause present) — store separately in windowFunctions
+      if (fc.over) {
+        windowFunctionsOut.push(buildWindowFunction(fc, alias, aliasMap))
+        continue
+      }
 
       // AT TIME ZONE → timezone(zone, col) → store as expression
       if (fnName === 'timezone' && (fc.args ?? []).length === 2) {
@@ -851,8 +1039,16 @@ function extractSelectedColumns(
         const isDistinct = Boolean(fc.agg_distinct)
         const displayAgg = isDistinct && aggName === 'COUNT' ? 'COUNT DISTINCT' : aggName
 
+        // FILTER (WHERE ...) clause attached to the aggregate
+        const filterClause = fc.agg_filter
+          ? restoreSentinelsInSql(stringifyNode(fc.agg_filter))
+          : undefined
+
         if (fc.agg_star) {
-          result.push({ id: crypto.randomUUID(), tableAlias: '', columnName: '*', alias, aggregate: displayAgg })
+          result.push({
+            id: crypto.randomUUID(), tableAlias: '', columnName: '*', alias, aggregate: displayAgg,
+            ...(filterClause ? { filterClause } : {}),
+          })
           continue
         }
 
@@ -867,13 +1063,17 @@ function extractSelectedColumns(
               columnName: argCr.colName,
               alias,
               aggregate: displayAgg,
+              ...(filterClause ? { filterClause } : {}),
             })
             continue
           }
         }
         // Complex aggregate arg
         const argStr = fc.args ? fc.args.map(stringifyNode).join(', ') : '*'
-        result.push({ id: crypto.randomUUID(), tableAlias: '', columnName: argStr, alias, aggregate: displayAgg })
+        result.push({
+          id: crypto.randomUUID(), tableAlias: '', columnName: argStr, alias, aggregate: displayAgg,
+          ...(filterClause ? { filterClause } : {}),
+        })
         continue
       }
     }
@@ -911,7 +1111,21 @@ function makeRule(field: string, operator: string, value: string): FilterRule {
   return { id: crypto.randomUUID(), field, operator, value }
 }
 
-function extractFilterGroup(node: PgNode | null | undefined, warnings: string[]): FilterGroup {
+/** Build a raw-expression FilterRule from any AST node. Centralises the __RAW__ pattern. */
+function rawFilterRule(node: PgNode, warnings: string[], label: string): FilterRule {
+  const raw = restoreSentinelsInSql(stringifyNode(node))
+  const preview = raw.length > 80 ? `${raw.slice(0, 80)}...` : raw
+  warnings.push(`${label}: "${preview}"`)
+  return makeRule('__raw__', '=', `__RAW__:${raw}`)
+}
+
+interface FilterCtx {
+  warnings: string[]
+  /** Recursively parse a SubLink subselect into a QueryState. */
+  parseSubquery: (subselect: PgNode) => QueryState | null
+}
+
+function extractFilterGroup(node: PgNode | null | undefined, ctx: FilterCtx): FilterGroup {
   const group = emptyFilterGroup()
   if (!node) return group
 
@@ -919,32 +1133,92 @@ function extractFilterGroup(node: PgNode | null | undefined, warnings: string[])
   if (be && (be.boolop === 'AND_EXPR' || be.boolop === 'OR_EXPR')) {
     group.combinator = be.boolop === 'OR_EXPR' ? 'OR' : 'AND'
     for (const arg of (be.args ?? [])) {
-      const item = extractFilterItem(arg, warnings)
+      const item = extractFilterItem(arg, ctx)
       if (item) group.rules.push(item)
     }
     return group
   }
 
-  const item = extractFilterItem(node, warnings)
+  const item = extractFilterItem(node, ctx)
   if (item) group.rules.push(item)
   return group
 }
 
+/** Build a subquery-bearing FilterRule. Returns null if the subselect cannot be parsed. */
+function subqueryRule(sl: PgNode, field: string, operator: string, ctx: FilterCtx): FilterRule | null {
+  const sub = ctx.parseSubquery(sl.subselect ?? {})
+  if (!sub) return null
+  return { id: crypto.randomUUID(), field, operator, value: '', subquery: sub }
+}
+
+/** Map a top-level SubLink in WHERE to a structured FilterRule. */
+function sublinkToRule(sl: PgNode, ctx: FilterCtx): FilterRule | null {
+  const kind: string = sl.subLinkType ?? ''
+  if (kind === 'EXISTS_SUBLINK') {
+    return subqueryRule(sl, '', 'exists', ctx)
+  }
+  if (kind === 'ANY_SUBLINK') {
+    // x IN (subquery) parses as ANY_SUBLINK with empty operName; x = ANY (sub) has operName = '='
+    const cr = getColRefParts(sl.testexpr ?? {})
+    if (!cr) return null
+    const field = cr.tableAlias ? `${cr.tableAlias}.${cr.colName}` : cr.colName
+    const op = getOpName(sl.operName ?? []) || ''
+    if (op === '' || op === '=') return subqueryRule(sl, field, 'in', ctx)
+    if (op === '<>' || op === '!=') return subqueryRule(sl, field, 'notIn', ctx)
+    const mapped = OPERATOR_MAP[op]
+    if (mapped) return subqueryRule(sl, field, mapped, ctx)
+    return null
+  }
+  if (kind === 'ALL_SUBLINK') {
+    const cr = getColRefParts(sl.testexpr ?? {})
+    if (!cr) return null
+    const field = cr.tableAlias ? `${cr.tableAlias}.${cr.colName}` : cr.colName
+    const op = getOpName(sl.operName ?? []) || ''
+    if (op === '<>' || op === '!=') return subqueryRule(sl, field, 'notIn', ctx)
+    const mapped = OPERATOR_MAP[op]
+    if (mapped) return subqueryRule(sl, field, mapped, ctx)
+    return null
+  }
+  if (kind === 'EXPR_SUBLINK') {
+    // bare scalar subquery used as a boolean is uncommon; preserve as raw
+    return null
+  }
+  return null
+}
+
 function extractFilterItem(
   node: PgNode,
-  warnings: string[]
+  ctx: FilterCtx
 ): FilterRule | FilterGroup | null {
+  const warnings = ctx.warnings
   if (!node) return null
 
   // BoolExpr AND/OR → nested group
   const be = nk('BoolExpr', node)
   if (be && (be.boolop === 'AND_EXPR' || be.boolop === 'OR_EXPR')) {
-    return extractFilterGroup(node, warnings)
+    return extractFilterGroup(node, ctx)
   }
-  // BoolExpr NOT → raw expression (FilterGroup has no 'not' field)
+  // BoolExpr NOT — recognise NOT EXISTS (...) structurally; otherwise preserve as expression
   if (be && be.boolop === 'NOT_EXPR') {
     const inner = be.args?.[0]
     if (inner) {
+      const sl = nk('SubLink', inner)
+      if (sl && (sl.subLinkType === 'EXISTS_SUBLINK')) {
+        const subRule = subqueryRule(sl, '', 'notExists', ctx)
+        if (subRule) return subRule
+      }
+      // Recognise NOT (x IN (subquery)) as a notIn-subquery rule.
+      // pgsql-parser emits `x NOT IN (sub)` as NOT_EXPR(ANY_SUBLINK(operName=[])).
+      const operName = sl?.operName
+      const operEmpty = !operName || (Array.isArray(operName) && operName.length === 0)
+      if (sl && sl.subLinkType === 'ANY_SUBLINK' && operEmpty) {
+        const cr = getColRefParts(sl.testexpr ?? {})
+        if (cr) {
+          const field = cr.tableAlias ? `${cr.tableAlias}.${cr.colName}` : cr.colName
+          const subRule = subqueryRule(sl, field, 'notIn', ctx)
+          if (subRule) return subRule
+        }
+      }
       warnings.push('NOT expression imported as raw filter expression')
       return {
         id: crypto.randomUUID(),
@@ -960,12 +1234,23 @@ function extractFilterItem(
   const nt = nk('NullTest', node)
   if (nt) {
     const cr = getColRefParts(nt.arg ?? {})
-    if (!cr) {
-      const raw = stringifyNode(node)
-      return makeRule('__raw__', '=', `__RAW__:${raw}`)
-    }
+    if (!cr) return rawFilterRule(node, warnings, 'IS [NOT] NULL on non-column expression')
     const field = cr.tableAlias ? `${cr.tableAlias}.${cr.colName}` : cr.colName
     return makeRule(field, nt.nulltesttype === 'IS_NOT_NULL' ? 'notNull' : 'null', '')
+  }
+
+  // SubLink — top-level subquery in WHERE: EXISTS (...), x IN (subquery), x = (subquery), etc.
+  const slTop = nk('SubLink', node)
+  if (slTop) {
+    const subRule = sublinkToRule(slTop, ctx)
+    if (subRule) return subRule
+  }
+
+  // CaseExpr — preserve the whole CASE … END as an expression rule with sentinel restoration.
+  if (nk('CaseExpr', node) !== null) {
+    const expr = restoreSentinelsInSql(stringifyNode(node))
+    warnings.push('CASE expression preserved as expression rule')
+    return { id: crypto.randomUUID(), field: '', operator: 'expression', value: expr } as FilterRule
   }
 
   // A_Expr (binary operator including <@, @>, &&, etc.)
@@ -973,14 +1258,33 @@ function extractFilterItem(
   if (ae) {
     const kind: string = ae.kind ?? 'AEXPR_OP'
 
-    // IN / NOT IN
+    // IN / NOT IN — check for SubLink in rexpr (subquery IN), otherwise list
     if (kind === 'AEXPR_IN') {
       const cr = getColRefParts(ae.lexpr ?? {})
       if (cr) {
         const field = cr.tableAlias ? `${cr.tableAlias}.${cr.colName}` : cr.colName
         const op = getOpName(ae.name ?? []) === '<>' ? 'notIn' : 'in'
+        // Subquery on right side?
+        const slRight = nk('SubLink', ae.rexpr ?? {})
+        if (slRight) {
+          const subRule = subqueryRule(slRight, field, op, ctx)
+          if (subRule) return subRule
+        }
         const listNode = nk('List', ae.rexpr ?? {})
-        const values = (listNode?.items ?? []).map(getConstValue)
+        const items = listNode?.items ?? []
+        const values: string[] = []
+        let hasNonLiteral = false
+        for (const it of items) {
+          if (nk('A_Const', it) !== null) {
+            values.push(getConstValue(it))
+          } else {
+            hasNonLiteral = true
+            values.push(restoreSentinelsInSql(stringifyNode(it)))
+          }
+        }
+        if (hasNonLiteral) {
+          warnings.push(`IN list contains non-literal items — preserved as text`)
+        }
         return makeRule(field, op, values.join(','))
       }
     }
@@ -1029,6 +1333,14 @@ function extractFilterItem(
       const mappedOp = OPERATOR_MAP[op]
       const leftCr = getColRefParts(ae.lexpr)
 
+      // Scalar subquery on right side: col op (SELECT ...)
+      const slRight = nk('SubLink', ae.rexpr ?? {})
+      if (slRight && mappedOp && leftCr) {
+        const field = leftCr.tableAlias ? `${leftCr.tableAlias}.${leftCr.colName}` : leftCr.colName
+        const subRule = subqueryRule(slRight, field, mappedOp, ctx)
+        if (subRule) return subRule
+      }
+
       if (mappedOp && leftCr) {
         const field = leftCr.tableAlias ? `${leftCr.tableAlias}.${leftCr.colName}` : leftCr.colName
 
@@ -1045,29 +1357,45 @@ function extractFilterItem(
       }
     }
 
-    // Fallback: store as raw expression
-    const raw = restoreSentinelsInSql(stringifyNode(node))
-    warnings.push(`Complex WHERE condition stored as raw expression: "${raw.slice(0, 80)}${raw.length > 80 ? '...' : ''}"`)
-    return makeRule('__raw__', '=', `__RAW__:${raw}`)
+    return rawFilterRule(node, warnings, 'Complex WHERE condition stored as raw expression')
   }
 
   // Anything else (function call in WHERE, etc.)
-  const raw = restoreSentinelsInSql(stringifyNode(node))
-  warnings.push(`Unsupported WHERE expression stored as raw: "${raw.slice(0, 80)}${raw.length > 80 ? '...' : ''}"`)
-  return makeRule('__raw__', '=', `__RAW__:${raw}`)
+  return rawFilterRule(node, warnings, 'Unsupported WHERE expression stored as raw')
 }
 
 // ── GROUP BY extraction ────────────────────────────────────────────────────
 
 function extractGroupBy(
   groupClause: PgNode[] | null | undefined,
-  aliasMap: Map<string, TableInstance>
+  aliasMap: Map<string, TableInstance>,
+  warnings: string[],
+  selectAliases?: Map<string, { tableAlias: string; columnName: string }>
 ): ColumnRef[] {
   if (!groupClause) return []
   return (groupClause ?? []).flatMap((node) => {
+    // GROUPING SETS / ROLLUP / CUBE — not yet supported as visual GROUP BY
+    if (nk('GroupingSet', node) !== null) {
+      const gs = nk('GroupingSet', node)
+      const kind: string = gs?.kind ?? 'GROUPING_SETS'
+      warnings.push(`GROUP BY ${kind.replace('GROUPING_SETS_', '').replace('_', ' ')} is not yet supported visually — items skipped.`)
+      return []
+    }
     const cr = getColRefParts(node)
-    if (!cr) return []
-    const tableAlias = cr.tableAlias ?? inferTableAlias(cr.colName, aliasMap) ?? ''
+    if (!cr) {
+      // Expression-based GROUP BY (e.g. date_trunc('day', t.ts)) — store as raw using __grafana__ alias
+      const expr = restoreSentinelsInSql(stringifyNode(node))
+      if (expr) {
+        return [{ tableAlias: '__grafana__', columnName: expr }]
+      }
+      return []
+    }
+    // GROUP BY may reference a SELECT-list output alias instead of a real column
+    if (!cr.tableAlias && selectAliases?.has(cr.colName)) {
+      const ref = selectAliases.get(cr.colName)!
+      return [{ tableAlias: ref.tableAlias, columnName: ref.columnName }]
+    }
+    const tableAlias = cr.tableAlias ?? inferTableAlias(cr.colName, aliasMap, warnings) ?? ''
     return [{ tableAlias, columnName: cr.colName }]
   })
 }
@@ -1076,7 +1404,8 @@ function extractGroupBy(
 
 function extractOrderBy(
   sortClause: PgNode[] | null | undefined,
-  aliasMap: Map<string, TableInstance>
+  aliasMap: Map<string, TableInstance>,
+  selectAliases?: Map<string, { tableAlias: string; columnName: string }>
 ): OrderByItem[] {
   if (!sortClause) return []
   return (sortClause ?? []).flatMap((item) => {
@@ -1084,9 +1413,20 @@ function extractOrderBy(
     if (!sb) return []
     const cr = getColRefParts(sb.node ?? {})
     if (!cr) return []
-    const tableAlias = cr.tableAlias ?? inferTableAlias(cr.colName, aliasMap) ?? ''
     const direction = (sb.sortby_dir === 'SORTBY_DESC' ? 'DESC' : 'ASC') as 'ASC' | 'DESC'
-    return [{ tableAlias, columnName: cr.colName, direction }]
+    const nulls: 'NULLS FIRST' | 'NULLS LAST' | undefined =
+      sb.sortby_nulls === 'SORTBY_NULLS_FIRST' ? 'NULLS FIRST'
+      : sb.sortby_nulls === 'SORTBY_NULLS_LAST' ? 'NULLS LAST'
+      : undefined
+
+    // ORDER BY may reference a SELECT-list output alias instead of a real column
+    if (!cr.tableAlias && selectAliases?.has(cr.colName)) {
+      const ref = selectAliases.get(cr.colName)!
+      return [{ tableAlias: ref.tableAlias, columnName: ref.columnName, direction, ...(nulls ? { nulls } : {}) }]
+    }
+
+    const tableAlias = cr.tableAlias ?? inferTableAlias(cr.colName, aliasMap) ?? ''
+    return [{ tableAlias, columnName: cr.colName, direction, ...(nulls ? { nulls } : {}) }]
   })
 }
 
@@ -1094,11 +1434,25 @@ function extractOrderBy(
 
 function extractLimitOffset(
   limitCount: PgNode | null | undefined,
-  limitOffset: PgNode | null | undefined
+  limitOffset: PgNode | null | undefined,
+  warnings?: string[]
 ): { limit: number | null; offset: number | null } {
-  const limit = limitCount ? Number(getConstValue(limitCount)) || null : null
-  const offset = limitOffset ? Number(getConstValue(limitOffset)) || null : null
-  return { limit, offset }
+  const parseInt = (node: PgNode | null | undefined, label: string): number | null => {
+    if (!node) return null
+    if (nk('A_Const', node) === null) {
+      // Non-literal LIMIT/OFFSET (e.g. parameter, expression) — preserve as null with a warning.
+      const expr = restoreSentinelsInSql(stringifyNode(node))
+      warnings?.push(`${label} expression "${expr}" is not a literal integer — dropped from query.`)
+      return null
+    }
+    const raw = getConstValue(node)
+    const n = Number(raw)
+    return Number.isFinite(n) && n > 0 ? n : null
+  }
+  return {
+    limit: parseInt(limitCount, 'LIMIT'),
+    offset: parseInt(limitOffset, 'OFFSET'),
+  }
 }
 
 // ── Text-level WITH clause splitter ───────────────────────────────────────
@@ -1657,7 +2011,7 @@ function parseSelectAst(
     appendUnionBranch(largQs, operator, rargQs)
 
     // Apply ORDER BY / LIMIT / OFFSET from the outer (UNION) node
-    const { limit, offset } = extractLimitOffset(selectStmt.limitCount, selectStmt.limitOffset)
+    const { limit, offset } = extractLimitOffset(selectStmt.limitCount, selectStmt.limitOffset, warnings)
     if (limit  !== null) largQs.limit  = limit
     if (offset !== null) largQs.offset = offset
     const outerAliasMap = new Map(largQs.tables.map((t) => [t.alias, t]))
@@ -1699,12 +2053,33 @@ function parseSelectAst(
     }
   }
 
-  const selectedColumns = extractSelectedColumns(selectStmt.targetList ?? [], aliasMap, warnings)
-  const where = extractFilterGroup(selectStmt.whereClause, warnings)
-  const groupBy = extractGroupBy(selectStmt.groupClause, aliasMap)
-  const having = extractFilterGroup(selectStmt.havingClause, warnings)
-  const orderBy = extractOrderBy(selectStmt.sortClause, aliasMap)
-  const { limit, offset } = extractLimitOffset(selectStmt.limitCount, selectStmt.limitOffset)
+  const windowFunctions: WindowFunctionDef[] = []
+  const selectedColumns = extractSelectedColumns(selectStmt.targetList ?? [], aliasMap, warnings, windowFunctions)
+  // Build alias → column ref map so GROUP BY / ORDER BY can resolve to SELECT-list output aliases
+  const selectAliases = new Map<string, { tableAlias: string; columnName: string }>()
+  for (const sc of selectedColumns) {
+    if (sc.alias && sc.tableAlias && sc.columnName && !sc.aggregate && !sc.expression) {
+      selectAliases.set(sc.alias, { tableAlias: sc.tableAlias, columnName: sc.columnName })
+    }
+  }
+  const filterCtx: FilterCtx = {
+    warnings,
+    parseSubquery: (subselect: PgNode) => {
+      const innerSelect = nk('SelectStmt', subselect) ?? subselect
+      if (!innerSelect || typeof innerSelect !== 'object') return null
+      try {
+        return parseSelectAst(innerSelect, appTables, appColumns, schemas, cteMap, warnings, true)
+      } catch (e) {
+        warnings.push(`Subquery in WHERE could not be parsed: ${e instanceof Error ? e.message : String(e)}`)
+        return null
+      }
+    },
+  }
+  const where = extractFilterGroup(selectStmt.whereClause, filterCtx)
+  const groupBy = extractGroupBy(selectStmt.groupClause, aliasMap, warnings, selectAliases)
+  const having = extractFilterGroup(selectStmt.havingClause, filterCtx)
+  const orderBy = extractOrderBy(selectStmt.sortClause, aliasMap, selectAliases)
+  const { limit, offset } = extractLimitOffset(selectStmt.limitCount, selectStmt.limitOffset, warnings)
   const distinct = Array.isArray(selectStmt.distinctClause) && selectStmt.distinctClause.length > 0
 
   return {
@@ -1712,6 +2087,7 @@ function parseSelectAst(
     tables: instances,
     joins,
     selectedColumns,
+    windowFunctions,
     where,
     groupBy,
     having,
@@ -1774,7 +2150,9 @@ async function parseSqlWithPerCteStrategy(
           parsedVisually = true
         }
       }
-    } catch { /* fall through to raw SQL */ }
+    } catch (e) {
+      warnings.push(`CTE "${entry.name}" parse error: ${e instanceof Error ? e.message : String(e)}`)
+    }
 
     if (!parsedVisually) {
       const cteDef: CTEDef = {
